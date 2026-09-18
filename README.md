@@ -269,6 +269,51 @@ publish it through your router or Cloudflare. Only the web UI port needs inbound
 5555 remains outbound from the container to the frames. Frames retain their
 existing access to the photo server.
 
+## Develop in a VS Code Dev Container
+
+Install Docker and the VS Code **Dev Containers** extension, start Docker, then
+open this repository and run **Dev Containers: Reopen in Container** from the
+Command Palette. The first build needs internet access to download the base
+image, Debian packages, Python dependencies, and editor extensions.
+
+The development image uses Python 3.12 on Debian Bookworm, matching production,
+with ADB, Git, globally installed Python dependencies, and a non-root `vscode` user.
+VS Code includes Python debugging and unittest discovery, and forwards port 8080.
+The configuration follows the [VS Code Dev Containers workflow](https://code.visualstudio.com/docs/devcontainers/create-dev-container).
+
+The image build installs `requirements.txt` globally. Workspace setup copies `config.example.json` to
+`.devcontainer/local/config.json` only if it does not already exist. Edit that
+local copy for development. Scheduling starts disabled in the example; manual
+web actions still control the configured devices. The controller does not start
+automatically when you open the container.
+
+From the container terminal:
+
+```bash
+python -m unittest -v
+python controller.py validate
+python webui.py set-password --username admin
+python controller.py run
+```
+
+Open `http://localhost:8080` once the controller is running, or use the forwarded
+address in VS Code's Ports panel. For breakpoints, select **Frame Controller**
+in Run and Debug and press F5 instead of starting `controller.py run` manually.
+Stop and restart the controller after changing configuration or Python code.
+
+Development configuration, state, login credentials, and ADB keys are kept in
+the Git-ignored `.devcontainer/local/` directory and survive container rebuilds.
+The container's `~/.android` links to that directory's `data/.android` folder.
+For real-device testing, the container needs LAN access to the frames; use
+`adb connect IP:PORT` and authorize its development key on each device.
+
+After changing requirements or the development Dockerfile, use
+**Dev Containers: Rebuild Container** to install dependencies into the image.
+If VS Code retained the previous virtual environment selection, run
+**Python: Select Interpreter** and choose `/usr/local/bin/python`.
+The production Dockerfile and TrueNAS Compose configuration are separate; run
+production `docker build` and `docker compose` commands from a host terminal.
+
 ## Tests
 
 ```bash
@@ -294,4 +339,3 @@ They do not validate a Docker build or real frame firmware.
 
 - Flask security guidance: https://flask.palletsprojects.com/en/stable/web-security/
 - Waitress deployment: https://flask.palletsprojects.com/en/stable/deploying/waitress/
-

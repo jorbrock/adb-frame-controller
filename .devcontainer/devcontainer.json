@@ -1,0 +1,39 @@
+{
+  "name": "ADB Frame Controller",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "init": true,
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/adb-frame-controller,type=bind",
+  "workspaceFolder": "/workspaces/adb-frame-controller",
+  "containerEnv": {
+    "CONFIG": "/workspaces/adb-frame-controller/.devcontainer/local/config.json",
+    "DATA_DIR": "/workspaces/adb-frame-controller/.devcontainer/local/data"
+  },
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Frame Controller Web UI",
+      "onAutoForward": "notify"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.unittestEnabled": true,
+        "python.testing.pytestEnabled": false,
+        "python.testing.unittestArgs": ["-v", "-s", ".", "-p", "test_*.py"]
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Frame Controller",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/controller.py",
+      "args": ["run"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "CONFIG": "${workspaceFolder}/.devcontainer/local/config.json",
+        "DATA_DIR": "${workspaceFolder}/.devcontainer/local/data"
+      },
+      "justMyCode": true
+    }
+  ]
+}
