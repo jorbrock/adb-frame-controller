@@ -125,6 +125,25 @@ def create_app(config, registry, data):
             flash(f"Reboot requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
 
+    @app.post("/frames/<name>/wake", defaults={"action": "wake"})
+    @app.post("/frames/<name>/sleep", defaults={"action": "sleep"})
+    def display_action(name, action):
+        token = request.form.get("request_id", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            abort(400, "Invalid request ID")
+        try:
+            registry.request_action(name, action, token)
+        except KeyError:
+            abort(404)
+        except RuntimeError as exc:
+            flash(str(exc), "error")
+        except OSError:
+            app.logger.exception("Cannot save manual display request")
+            flash("Could not save the request. Check the data directory and try again.", "error")
+        else:
+            flash(f"{action.capitalize()} requested for {name}. Progress will appear below.", "success")
+        return redirect(url_for("index"), code=303)
+
     def configuration(name):
         try:
             return registry.configuration(name)

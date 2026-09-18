@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
+ACTIVE_PHASES = ("queued", "rebooting", "starting")
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 
 
@@ -58,6 +59,21 @@ def window(now, frame):
     if start > end and current < end:
         date -= timedelta(days=1)
     return ("day" if active else "night"), date.isoformat()
+
+
+def next_boundary(now, value):
+    """Next daily wall-clock event: first fold, or first valid minute after a gap."""
+    hour, mins = divmod(minute(value), 60)
+    for days in (0, 1):
+        candidate = (now + timedelta(days=days)).replace(hour=hour, minute=mins,
+                                                       second=0, microsecond=0, fold=0)
+        # A nonexistent DST time takes effect when the local clock resumes.
+        while (datetime.fromtimestamp(candidate.timestamp(), now.tzinfo).replace(tzinfo=None)
+               != candidate.replace(tzinfo=None)):
+            candidate += timedelta(minutes=1)
+        if candidate.timestamp() > now.timestamp():
+            return candidate.timestamp()
+    raise ValueError("Cannot find next schedule boundary")
 
 
 def env_bool(name, default):
@@ -188,14 +204,31 @@ class Frame:
             "result": result, **extra,
         })
 
+    def active_override(self, now, state=None):
+        override = (self.state if state is None else state).get("override", {})
+        if override and (not self.scheduled or now.timestamp() < override["expires_at"]):
+            return override
+        return {}
+
     def tick(self):
+        now = datetime.now(self.zone)
+        if self.state.get("override") and not self.active_override(now):
+            del self.state["override"]
+            self.save()
+            self.last_mode = None
+            self.last_night = 0
         if self.manual_tick():
             return
-        if not self.scheduled:
+        now = datetime.now(self.zone)
+        override = self.active_override(now)
+        if override.get("mode") == "day":
+            self.status("manual_wake_active", mode="day")
+            return  # No night rechecks or morning reboots while held awake.
+        if not self.scheduled and not override:
             self.status("schedule_disabled")
             return
-        now = datetime.now(self.zone)
         mode, token = window(now, self.cfg)
+        mode = override.get("mode", mode)
         if mode != self.last_mode:
             self.last_night = 0
             self.last_mode = mode
@@ -270,37 +303,89 @@ class Frame:
             raise RuntimeError(f"Application launch not confirmed: {output[:600]}")
 
     def request_reboot(self, request_id):
+        self.request_action("reboot", request_id)
+
+    def request_action(self, action, request_id):
+        if action not in ("wake", "sleep", "reboot"):
+            raise ValueError("Invalid manual action")
         # Never wait for ADB in a web request or let two actions overlap.
         if not self.mutex.acquire(blocking=False):
             raise RuntimeError("Frame is busy. Try again shortly.")
         try:
             old = self.state.get("manual", {})
             if old.get("id") == request_id:
-                return  # Same browser request is idempotent, even after completion.
-            if old.get("phase") in ("queued", "rebooting", "starting"):
-                raise RuntimeError("A reboot is already in progress for this frame.")
-            if time.time() - old.get("requested_at", 0) < 120:
+                if old.get("action", "reboot") != action:
+                    raise RuntimeError("Request ID already used for a different action.")
+                return  # Same browser request never renews an override.
+            if old.get("phase") in ACTIVE_PHASES:
+                raise RuntimeError("A manual action is already in progress for this frame.")
+            now = time.time()
+            last_reboot = self.state.get("last_reboot_requested_at",
+                old.get("requested_at", 0) if old.get("action", "reboot") == "reboot" else 0)
+            if action == "reboot" and now - last_reboot < 120:
                 raise RuntimeError("Please wait two minutes between reboot requests.")
-            self.state["manual"] = dict(id=request_id, phase="queued", requested_at=time.time(),
-                                        message="Waiting to connect")
-            self.save()
+            previous = deepcopy(self.state)
+            self.state["manual"] = dict(id=request_id, action=action, phase="queued",
+                                        requested_at=now, message="Waiting to connect")
+            if action == "reboot":
+                self.state["last_reboot_requested_at"] = now
+            else:
+                # Preserve legacy reboot cooldown even when a display action replaces its job.
+                self.state["last_reboot_requested_at"] = last_reboot
+                self.state["override"] = dict(
+                    mode="day" if action == "wake" else "night",
+                    expires_at=next_boundary(datetime.now(self.zone),
+                                             self.cfg["sleep" if action == "wake" else "wake"]),
+                )
+            try:
+                self.save()  # Persist intent before any device receives commands.
+            except OSError:
+                self.state = previous
+                raise
+            self.last_mode = None
+            self.last_night = 0
             self.wakeup.set()
-            LOG.info("%s: manual reboot queued", self.cfg["name"])
+            LOG.info("%s: manual %s queued", self.cfg["name"], action)
         finally:
             self.mutex.release()
 
     def manual_tick(self):
         job = self.state.get("manual", {})
-        if job.get("phase") not in ("queued", "rebooting", "starting"):
+        if job.get("phase") not in ACTIVE_PHASES:
+            return False
+        action = job.get("action", "reboot")  # Jobs written before v1.2.0 are reboots.
+        if action != "reboot" and not self.active_override(datetime.now(self.zone)):
+            job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
+            self.save()
             return False
         # Bounded job, including unreachable frames. Never retry reboot itself.
         if time.time() - job["requested_at"] > 900:
             job.update(phase="failed", message="Timed out after 15 minutes. Check ADB connectivity and the frame.")
             self.save()
-            self.status("manual_reboot_failed", error=job["message"])
+            self.status(f"manual_{action}_failed", error=job["message"])
             return True
         try:
             self.adb.connect()
+            if action != "reboot":
+                # A slow connection must not apply an override after its boundary.
+                if not self.active_override(datetime.now(self.zone)):
+                    job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
+                    self.save()
+                    return False
+                if action == "wake":
+                    self.launch()
+                    message = "App launched and day brightness restored"
+                else:
+                    self.night()
+                    self.state.pop("completed_window", None)
+                    self.last_night = time.monotonic()
+                    self.last_mode = "night"
+                    message = "App stopped and brightness set to zero"
+                job.update(phase="completed", message=message, completed_at=time.time())
+                self.save()
+                self.status(f"manual_{action}_completed")
+                LOG.info("%s: manual %s completed", self.cfg["name"], action)
+                return True
             boot_id = self.adb.boot_id()
             if job["phase"] == "queued":
                 job.update(phase="rebooting", previous_boot_id=boot_id,
@@ -323,10 +408,14 @@ class Frame:
                 self.save()
             if time.time() < job["ready_at"]:
                 return True
-            mode, token = window(datetime.now(self.zone), self.cfg)
-            if self.scheduled and mode == "night":
+            now = datetime.now(self.zone)
+            mode, token = window(now, self.cfg)
+            override = self.active_override(now)
+            mode = override.get("mode", mode if self.scheduled else "day")
+            if mode == "night":
                 self.night()
-                message = "Reboot completed; app stopped and brightness set to zero for the night schedule"
+                self.state.pop("completed_window", None)
+                message = "Reboot completed; app stopped and brightness set to zero for sleep mode"
                 self.last_night = time.monotonic()
             else:
                 self.launch()
@@ -339,8 +428,8 @@ class Frame:
         except Exception as exc:
             job["message"] = str(exc)[:600]
             self.save()
-            self.status("manual_reboot_waiting", error=job["message"])
-            LOG.warning("%s manual reboot: %s", self.cfg["name"], exc)
+            self.status(f"manual_{action}_waiting", error=job["message"])
+            LOG.warning("%s manual %s: %s", self.cfg["name"], action, exc)
         return True
 
     def snapshot(self):
@@ -348,9 +437,14 @@ class Frame:
         state = read_json(self.path, {})
         status = read_json(self.status_path, {})
         job = state.get("manual", {})
-        return {**self.cfg, "mode": window(datetime.now(self.zone), self.cfg)[0],
-                "status": status, "job": job,
-                "busy": job.get("phase") in ("queued", "rebooting", "starting")}
+        now = datetime.now(self.zone)
+        override = self.active_override(now, state)
+        display_override = dict(override)
+        if override and self.scheduled:
+            display_override["until"] = datetime.fromtimestamp(override["expires_at"], self.zone).isoformat()
+        return {**self.cfg, "mode": override.get("mode", window(now, self.cfg)[0]),
+                "status": status, "job": job, "override": display_override,
+                "busy": job.get("phase") in ACTIVE_PHASES}
 
     def work(self):
         while not STOP.is_set() and not self.stopped.is_set():
@@ -366,8 +460,7 @@ class Frame:
                         self.status("error", error=str(exc))
                     except OSError:
                         LOG.exception("Cannot write frame status")
-            self.wakeup.wait(5 if self.state.get("manual", {}).get("phase") in
-                             ("queued", "rebooting", "starting") else 30)
+            self.wakeup.wait(5 if self.state.get("manual", {}).get("phase") in ACTIVE_PHASES else 30)
 
 
 class FrameRegistry:
@@ -396,6 +489,10 @@ class FrameRegistry:
     def request_reboot(self, name, token):
         with self.lock:
             self.frames[name].request_reboot(token)
+
+    def request_action(self, name, action, token):
+        with self.lock:
+            self.frames[name].request_action(action, token)
 
     def _start(self, frame):
         def run():
@@ -435,8 +532,8 @@ class FrameRegistry:
                 raise RuntimeError("Frame is busy. Try again shortly.")
             added = None
             try:
-                if frame is not None and frame.state.get("manual", {}).get("phase") in ("queued", "rebooting", "starting"):
-                    raise RuntimeError("Wait for the reboot to finish before editing or removing this frame.")
+                if frame is not None and frame.state.get("manual", {}).get("phase") in ACTIVE_PHASES:
+                    raise RuntimeError("Wait for the manual action to finish before editing or removing this frame.")
                 if frame is None:
                     added = Frame(cfg, self.config["timezone"], self.config.get("enabled", False), self.data)
                     worker = self._start(added) if self.running else None

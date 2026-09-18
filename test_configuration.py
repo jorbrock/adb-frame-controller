@@ -197,7 +197,7 @@ class RegistryTests(unittest.TestCase):
         for phase in ("queued", "rebooting", "starting"):
             frame.state["manual"] = dict(phase=phase)
             for values in (frame.cfg, None):
-                with self.subTest(phase=phase), self.assertRaisesRegex(RuntimeError, "reboot to finish"):
+                with self.subTest(phase=phase), self.assertRaisesRegex(RuntimeError, "manual action to finish"):
                     self.change("living-room", values)
         self.assertFalse((self.data / "frames.json").exists())
 
@@ -362,6 +362,29 @@ class ConfigurationWebTests(unittest.TestCase):
             self.assertIn(b"another session", response.data)
             self.assertIn(stale["revision"].encode(), response.data)
         self.assertEqual(self.registry.frames["living-room"].cfg["day_brightness"], 100)
+
+    def test_display_controls_queue_actions_and_show_override(self):
+        frame = self.registry.frames["living-room"]
+        frame.adb = Mock()
+        frame.adb.shell.return_value = "Status: ok"
+        for action, token, mode in (("wake", "a" * 32, "day"), ("sleep", "b" * 32, "night")):
+            frame.adb.reset_mock()
+            response = self.client.post(f"/frames/living-room/{action}",
+                data=dict(csrf="csrf-token", request_id=token), follow_redirects=True)
+            self.assertEqual(response.status_code, 200)
+            frame.adb.connect.assert_not_called()
+            self.assertEqual(frame.state["manual"]["phase"], "queued")
+            self.assertEqual(frame.state["override"]["mode"], mode)
+            self.assertIn(f"{action.capitalize()} in progress".encode(), response.data)
+            self.assertIn(b"Wake frame", response.data)
+            self.assertIn(b"Sleep frame", response.data)
+            self.assertEqual(self.client.post("/frames/living-room/remove", data=self.form()).status_code, 409)
+            frame.tick()
+            response = self.client.get("/")
+            self.assertIn(f"Manual {action}".encode(), response.data)
+            self.assertIn(b"scheduling is paused", response.data)
+            self.assertNotIn(b"in progress", response.data)
+            frame.adb.run.assert_not_called()
 
     def test_storage_errors_are_actionable(self):
         with patch.object(c, "atomic_json", side_effect=OSError("private details")):

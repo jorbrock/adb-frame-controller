@@ -96,6 +96,37 @@ class WebTests(unittest.TestCase):
         (self.data / "web-auth.json").write_text(json.dumps(self.auth))
         self.assertEqual(self.client.get("/").status_code, 302)
 
+    def test_wake_and_sleep_require_authentication_csrf_and_valid_request_ids(self):
+        for action in ("wake", "sleep"):
+            self.assertEqual(self.client.post(f"/frames/living-room/{action}").status_code, 302)
+        self.frame.request_action.assert_not_called()
+        self.login()
+        for action in ("wake", "sleep"):
+            path = f"/frames/living-room/{action}"
+            self.assertEqual(self.client.get(path).status_code, 405)
+            self.assertEqual(self.client.post(path, data=dict(csrf="wrong", request_id="a" * 32)).status_code, 400)
+            self.assertEqual(self.client.post(path, data=dict(csrf=self.token(), request_id="invalid")).status_code, 400)
+            self.assertEqual(self.client.post(f"/frames/unknown/{action}",
+                data=dict(csrf=self.token(), request_id="a" * 32)).status_code, 404)
+            self.frame.request_action.assert_not_called()
+            self.assertEqual(self.client.post(path,
+                data=dict(csrf=self.token(), request_id="a" * 32)).status_code, 303)
+            self.frame.request_action.assert_called_once_with(action, "a" * 32)
+            self.frame.request_action.reset_mock()
+
+    def test_wake_and_sleep_show_busy_and_storage_errors(self):
+        self.login()
+        for action in ("wake", "sleep"):
+            self.frame.request_action.side_effect = RuntimeError("A manual action is already in progress")
+            response = self.client.post(f"/frames/living-room/{action}",
+                data=dict(csrf=self.token(), request_id="a" * 32), follow_redirects=True)
+            self.assertIn(b"already in progress", response.data)
+            self.frame.request_action.side_effect = OSError("disk full")
+            with self.assertLogs(self.app.logger, level="ERROR"):
+                response = self.client.post(f"/frames/living-room/{action}",
+                    data=dict(csrf=self.token(), request_id="b" * 32), follow_redirects=True)
+            self.assertIn(b"Could not save the request", response.data)
+
     def test_logout(self):
         self.login()
         self.assertEqual(self.client.post("/logout", data=dict(csrf=self.token())).status_code, 303)

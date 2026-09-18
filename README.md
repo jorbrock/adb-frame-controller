@@ -1,4 +1,4 @@
-# ADB Frame Controller
+# ADB Frame Controller v1.2.0
 
 A small Python + ADB container with a local web interface that stops ImmichFrame and sets screen brightness to zero
 at night, then reboots and explicitly launches the app each morning. It operates
@@ -11,36 +11,64 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 ### Web behavior and local login
 
 - Lists configured frames with address, wake/sleep times, recent controller
-  results, and manual reboot progress. Use **Add frame**, **Edit settings**, and
+  results, and manual action progress. Use **Add frame**, **Edit settings**, and
   **Remove** to manage up to 50 frames without restarting the controller.
 - Frame forms cover name, ADB address, app package/activity, wake/sleep times,
   morning action, day brightness, boot delay, and night recheck interval.
   Removal requires a confirmation page. Empty configurations are supported.
-- Settings are validated before saving. Busy frames and active manual reboots
+- Settings are validated before saving. Busy frames and active manual actions
   reject edits/removal; stale forms cannot overwrite newer changes.
-- Manual reboot runs independently per frame and is serialized with its scheduled
-  work. It explicitly relaunches ImmichFrame after Android boots and the delay
-  expires. At night, if scheduling is enabled, it stops the app and sets brightness to zero.
+- **Wake frame** restores day brightness and launches the app without rebooting.
+  **Sleep frame** stops the app and sets brightness to zero while keeping ADB reachable.
+  Manual overrides and their expiry are shown on each card; see below for scheduling behavior.
+- Manual actions run independently per frame and are serialized with scheduled
+  work. Manual reboot explicitly relaunches ImmichFrame after Android boots and the delay
+  expires. It respects the active manual override; otherwise it follows the schedule.
 - Repeated submissions of the most recent request are ignored. Busy frames reject new
   requests, and there is a two-minute cooldown between manual reboot requests.
   A frame briefly busy doing scheduled work may ask you to try again shortly.
 - Manual jobs persist across container restarts and have a 15-minute timeout.
-  Connections/launches retry; the actual reboot command is sent at most once per
-  request. A successful manual recovery also fulfills the current morning window.
-- A failure is shown in the frame's card. You can request another reboot after
+  Wake/sleep connections and commands also retry within this timeout; pending
+  wake/sleep requests are cancelled if their schedule boundary passes first.
+  The actual reboot command is sent at most once per request. A successful manual
+  reboot that launches the app also fulfills the current morning window.
+- A failure is shown in the frame's card. You can request another action after
   the pending job finishes or times out. An unchanged boot ID is never considered
   a successful reboot. These statuses do not detect stalled photo progression.
 - One username/password account, with a salted password hash stored in
   `/data/web-auth.json`. Sessions expire after 12 hours and are invalidated when
   the container restarts or the password changes. Run `set-password` again to
   change/reset the account; no restart is needed for that change.
-- Login, reboot, and configuration forms use CSRF tokens; changes require POST.
+- Login, manual action, and configuration forms use CSRF tokens; changes require POST.
   Cookies are HttpOnly and SameSite=Strict. Failed logins are rate limited.
   The UI uses only bundled CSS/JavaScript, with no CDN or external services.
 - Direct LAN HTTP is supported. HTTP does not encrypt the password or session in
   transit; use a unique local password. If you later use your local reverse proxy
   with HTTPS, set `WEB_SECURE_COOKIE` to `"true"` and recreate the container. Keep it false
   for direct HTTP. Preserve the existing subnet restrictions.
+
+### Manual wake and sleep
+
+A manual wake holds the frame awake until **Sleep frame** is clicked or the next
+scheduled sleep event arrives. For example, with sleep set to 22:00, waking a
+frame at 23:00 keeps it awake until 22:00 the next day. During this hold the
+controller does not send the periodic night commands or run a morning reboot.
+A wake before midnight or after midnight uses the next sleep time in the frame's
+timezone; overnight schedules work the same way.
+
+Manual sleep holds night mode until **Wake frame** is clicked or the next
+scheduled wake event arrives. Night commands continue at the configured recheck
+interval while held asleep. Sleep uses brightness zero and app force-stop, not
+Android's network-disabling sleep key.
+
+Overrides are saved before commands are sent and survive controller restarts.
+Rebooting a frame preserves its override and restores the appropriate mode.
+When scheduling is paused, overrides remain until manually changed. When scheduling
+is enabled again, any override whose saved expiry has passed is cleared.
+Changing a frame's settings does not change an existing override's saved expiry;
+issue a new manual action to replace it. Retrying the same submitted form does
+not extend the hold. An override records the requested mode; check the action
+result for connection or command failures.
 
 ### Saving frame settings
 
@@ -56,7 +84,7 @@ immediately start its morning sequence or apply night mode. Edits preserve reboo
 history, including when renaming a frame: a completed morning sequence does not
 run again just because settings changed. App and brightness changes take effect
 on the next app launch; schedule changes are evaluated on the next worker tick.
-An active manual reboot must finish or time out before editing or removal.
+An active manual action must finish, expire, or time out before editing or removal.
 Removing a frame stops future commands without changing its current display.
 Its state/status files are retained; adding it again under the same name restores
 its history. Use the same name for the same physical frame.
@@ -71,7 +99,7 @@ Set global options in the service's `environment:` section in `compose.yaml`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SCHEDULE_ENABLED` | `"false"` | Enable scheduled wake/sleep actions. Manual reboot remains available when false. |
+| `SCHEDULE_ENABLED` | `"false"` | Enable scheduled wake/sleep actions. Manual wake, sleep, and reboot remain available when false. |
 | `TZ` | `UTC` | IANA timezone for frame schedules; the sample Compose file uses `America/Los_Angeles`. |
 | `WEB_ENABLED` | `"true"` | Serve the authenticated web UI on port 8080. |
 | `WEB_SECURE_COOKIE` | `"false"` | Restrict session cookies to HTTPS; enable when using an HTTPS reverse proxy. |
@@ -208,7 +236,7 @@ These commands require appropriate host permissions:
 mkdir -p /mnt/tank/apps/frame-controller/data
 chown 568:568 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
-docker build -t frame-controller:1.1.0 .
+docker build -t frame-controller:1.2.0 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
@@ -308,8 +336,9 @@ one frame manually with `adb -s IP:PORT reboot`; once its boot ID changes, the
 controller can finish startup. Do not delete state to fix connection failures.
 
 To reboot a frame from your browser, sign in and use its Reboot frame button.
-To manually restart only an app during the day, use the force-stop and start commands
-from section 1 in the container shell. During the night, the scheduler will stop the app and set brightness to zero again within the configured recheck interval.
+Use **Wake frame** to launch the app and restore brightness without rebooting,
+or **Sleep frame** to stop the app and dim the display. Manual wake pauses night
+rechecks until the next scheduled sleep time or a manual sleep request.
 
 Use DHCP reservations. On UniFi, permit the TrueNAS container's effective source
 IP (normally the TrueNAS LAN IP with bridge networking) to reach only the frames'
@@ -383,7 +412,10 @@ Configuration tests cover authenticated add/edit/remove flows, validation,
 loading frame settings exclusively from the data directory, environment defaults,
 boolean/timezone validation, ignored legacy config files, empty starts, rename
 history, storage failures, stale forms, concurrent edits, and live worker
-startup/removal. They do not validate a Docker build or real frame firmware.
+startup/removal. Manual display tests cover wake holds through the following day,
+manual sleep, restart persistence, reboot interaction, expired/failed requests,
+overnight schedules, DST gaps/repeated hours, CSRF, and busy-action protection.
+They do not validate a Docker build or real frame firmware.
 
 ## References
 

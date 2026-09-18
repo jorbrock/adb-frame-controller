@@ -17,6 +17,9 @@ document.querySelector('#confirm-reboot')?.addEventListener('click', () => {
   document.querySelector('#confirm-reboot').disabled = true;
   pendingForm.submit();
 });
+document.querySelectorAll('.display-form').forEach(form => {
+  form.addEventListener('submit', () => { submitting = true; });
+});
 document.querySelectorAll('time[datetime]').forEach(element => {
   const value = new Date(element.dateTime);
   if (!Number.isNaN(value.getTime())) element.textContent = value.toLocaleString();

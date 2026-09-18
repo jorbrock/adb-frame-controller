@@ -1,6 +1,6 @@
 services:
   frame-controller:
-    image: frame-controller:1.1.0
+    image: frame-controller:1.2.0
     pull_policy: never
     restart: unless-stopped
     init: true
