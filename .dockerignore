@@ -1,0 +1,9 @@
+*
+!controller.py
+!Dockerfile
+!webui.py
+!requirements.txt
+!templates/
+!templates/**
+!static/
+!static/**

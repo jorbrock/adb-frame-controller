@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="login-panel">
+  <p class="eyebrow">ONE-TIME SETUP</p>
+  <h1>Set your login.</h1>
+  <p class="intro">Create your local account from the container shell in TrueNAS, then reload this page.</p>
+  <pre>python /app/webui.py set-password</pre>
+  <p class="muted">The command prompts for your password. Frame controls remain locked until setup is complete.</p>
+  <a class="button primary" href="{{ url_for('login') }}">Reload sign-in page</a>
+</section>
+{% endblock %}

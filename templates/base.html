@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Frame Controller{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark" aria-hidden="true">▣</span> Frame Controller</a>
+      {% if g.logged_in %}
+      <form action="{{ url_for('logout') }}" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="quiet" type="submit">Sign out</button>
+      </form>
+      {% else %}<span class="local-label">LOCAL ACCESS</span>{% endif %}
+    </header>
+    <main>{% block content %}{% endblock %}</main>
+    <footer>Frame Controller <span>v1.1.0</span></footer>
+  </div>
+</body>
+</html>

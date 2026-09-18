@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">HOME DISPLAY CONTROL</p><h1>Your frames.</h1>
+  <p class="intro">A fresh start for a slideshow that needs one.</p></div>
+  <div class="summary"><strong>{{ frames|length }}</strong> configured frames<span>{{ timezone }}</span></div>
+</section>
+<div class="toolbar"><span class="schedule"><i class="dot {% if not scheduled %}off{% endif %}"></i> Schedule {{ 'enabled' if scheduled else 'paused' }}</span><span id="refresh-status">Updates every 10 seconds</span></div>
+{% for category, message in get_flashed_messages(with_categories=true) %}
+<p class="notice {{ category }}" role="status">{{ message }}</p>
+{% endfor %}
+<div class="frame-grid" data-refresh="true">
+{% for frame in frames %}
+  <article class="frame-card">
+    <div class="card-top"><span class="frame-icon" aria-hidden="true">▣</span><span class="badge {{ 'busy' if frame.busy else '' }}">{{ 'Reboot in progress' if frame.busy else ('Night schedule' if scheduled and frame.mode == 'night' else 'Manual control ready') }}</span></div>
+    <h2>{{ frame.name }}</h2><p class="address">{{ frame.address }}</p>
+    <dl class="times"><div><dt>Wake</dt><dd>{{ frame.wake }}</dd></div><div><dt>Sleep</dt><dd>{{ frame.sleep }}</dd></div><div><dt>Boot delay</dt><dd>{{ frame.boot_delay_seconds }}s</dd></div></dl>
+    <div class="frame-status">
+      <p class="eyebrow">LAST CONTROLLER RESULT</p>
+      <p>{{ frame.status.get('result', 'No activity yet')|replace('_', ' ')|capitalize }}</p>
+      {% if frame.status.get('error') %}<p class="error-detail">{{ frame.status.error }}</p>{% endif %}
+      {% if frame.status.get('updated_at') %}<time datetime="{{ frame.status.updated_at }}">{{ frame.status.updated_at }}</time>{% endif %}
+    </div>
+    {% if frame.job %}
+    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Last manual reboot' if not frame.busy else 'Manual reboot' }} · {{ frame.job.phase|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
+    {% endif %}
+    <form class="reboot-form" method="post" action="{{ url_for('reboot', name=frame.name) }}" data-frame="{{ frame.name }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="request_id" value="{{ request_token() }}">
+      <button class="reboot" type="submit" {% if frame.busy %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy else 'Reboot frame' }}</button>
+    </form>
+  </article>
+{% endfor %}
+</div>
+<p class="footnote">Results show controller actions; they do not confirm that photos are advancing. Reboots during scheduled sleep hours return the display to sleep.</p>
+<dialog id="reboot-dialog">
+  <p class="eyebrow">RESTART DISPLAY</p><h2>Reboot <span id="reboot-name"></span>?</h2>
+  <p>The display will briefly disconnect. The controller will wait for it to boot and then restore the slideshow or night schedule.</p>
+  <div class="dialog-actions"><button id="cancel-reboot" class="quiet" type="button">Cancel</button><button id="confirm-reboot" class="primary" type="button">Reboot frame</button></div>
+</dialog>
+{% endblock %}

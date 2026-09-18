@@ -1,0 +1,29 @@
+services:
+  frame-controller:
+    image: frame-controller:1.1.0
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    user: "568:568"
+    environment:
+      HOME: /data
+    ports:
+      # Replace with your TrueNAS LAN IP; publish only on this interface.
+      - "192.168.40.10:8080:8080"
+    volumes:
+      - /mnt/tank/apps/frame-controller/config:/config:ro
+      - /mnt/tank/apps/frame-controller/data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
