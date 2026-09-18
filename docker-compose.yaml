@@ -1,21 +1,27 @@
+# TrueNAS Include Config:
+# include:
+#   - /mnt/BrockNetPoolSSD/AppConfigs/AdbFrameController/docker-compose.yaml
 services:
   frame-controller:
-    image: frame-controller:1.2.0
+    image: frame-controller:1.2.2
     pull_policy: never
     restart: unless-stopped
     init: true
     user: "3019:3019"
     environment:
       HOME: /data
-      SCHEDULE_ENABLED: "false"
+      SCHEDULE_ENABLED: "true"
       TZ: America/Los_Angeles
       WEB_ENABLED: "true"
       WEB_SECURE_COOKIE: "false"
     ports:
-      # Replace with your TrueNAS LAN IP; publish only on this interface.
-      - "192.168.40.10:8080:8080"
+      - host_ip: 192.168.10.13
+        mode: ingress
+        protocol: tcp
+        published: 80
+        target: 8080
     volumes:
-      - /mnt/tank/apps/frame-controller/data:/data
+      - /mnt/BrockNetPoolSSD/AppConfigs/AdbFrameController/data:/data
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
