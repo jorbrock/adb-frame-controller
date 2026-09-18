@@ -1,6 +1,6 @@
 # ADB Frame Controller
 
-A small Python + ADB container with a local web interface that stops ImmichFrame and requests screen sleep
+A small Python + ADB container with a local web interface that stops ImmichFrame and sets screen brightness to zero
 at night, then reboots and explicitly launches the app each morning. It operates
 independently of Immich, ImmichFrame's server, and Immich Kiosk; no Immich API key
 or changes to those containers are required.
@@ -15,7 +15,7 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   in the JSON file; there is no arbitrary-command endpoint or bulk reboot button.
 - Manual reboot runs independently per frame and is serialized with its scheduled
   work. It explicitly relaunches ImmichFrame after Android boots and the delay
-  expires. At night, if scheduling is enabled, it returns the frame to sleep.
+  expires. At night, if scheduling is enabled, it stops the app and sets brightness to zero.
 - Repeated submissions of the most recent request are ignored. Busy frames reject new
   requests, and there is a two-minute cooldown between manual reboot requests.
   A frame briefly busy doing scheduled work may ask you to try again shortly.
@@ -41,17 +41,20 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 
 - Independent worker per frame; one unreachable device does not block the others.
 - Per-frame local wake/sleep times, using an IANA timezone with daylight saving time.
-- At night: `am force-stop PACKAGE`, then `input keyevent 223` (SLEEP).
-  Repeats every five minutes by default to handle incidental wakeups.
+- At night: `am force-stop PACKAGE`, set `screen_brightness_mode` to `0`
+  (manual), then set `screen_brightness` to `0`. Android stays awake for network ADB.
+  Repeats every five minutes by default to handle incidental app starts or brightness changes.
 - In the morning: one reboot attempt per wake window, reconnect, confirm the
   kernel boot ID changed, wait for `sys.boot_completed=1`, allow an additional
-  60 seconds, wake the screen with keycode 224, then explicitly launch the app.
+  60 seconds, wake the screen with keycode 224, set manual brightness to
+  `day_brightness` (default `128`, configurable per frame from `1` to `255`),
+  then explicitly launch the app. Daytime manual reboots restore this brightness too.
 - Persisted state prevents another reboot in the same wake window after a
   container restart. A failed/ambiguous reboot is not automatically repeated.
   Connection and launch failures retry every 30 seconds.
 - The scheduler catches up after downtime. Enabling or first starting it during
   the day immediately begins that day's morning sequence, including a reboot.
-  Starting it at night immediately applies sleep. Schedule changes need a restart.
+  Starting it at night immediately applies night mode. Schedule changes need a restart.
 - Spring DST gaps take effect at the first available time after the scheduled
   boundary. Repeated fall hours share one wake-window date and do not add a reboot.
 - JSON status files, stdout logs, and a Docker scheduler heartbeat health check.
@@ -60,33 +63,61 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 
 ## 1. Prove these prerequisites on ONE frame
 
-Use its reserved IP and actual ADB port. Commands below assume `192.168.40.61:5555`.
+Use its reserved IP and actual ADB port. Commands below assume `192.168.30.200:5555`.
+
+Install [Discreet Launcher](https://github.com/falzonv/discreet-launcher) on
+**each frame** and make it the default Home app before enabling the schedule.
+Download its APK from the project's [releases](https://github.com/falzonv/discreet-launcher/releases),
+then install the downloaded file (replace the local path below):
 
 ```bash
-adb connect 192.168.40.61:5555
-adb -s 192.168.40.61:5555 shell pm list packages
-adb -s 192.168.40.61:5555 shell am force-stop com.immichframe.immichframe
-adb -s 192.168.40.61:5555 shell input keyevent 223
+adb connect 192.168.30.200:5555
+adb -s 192.168.30.200:5555 install -r /path/to/discreet-launcher.apk
+adb -s 192.168.30.200:5555 shell am start -a android.settings.HOME_SETTINGS
 ```
 
-Confirm the backlight actually turns off. Leave it asleep for a meaningful
-interval (ideally overnight), then reconnect and test wake/start:
+On the frame, select **Discreet Launcher** as the default Home app. If that settings
+screen is unavailable, open Android Settings → Apps → Default apps → Home app,
+or press Home and select Discreet Launcher with **Always** when prompted.
+Configure a black wallpaper and confirm Home shows Discreet Launcher.
+ImmichFrame must not be the default Home app: Android may otherwise relaunch it
+when the controller force-stops it.
+
+Read the current brightness and choose a daytime value for `day_brightness` in
+that frame's configuration. The controller uses manual brightness day and night;
+it does not restore adaptive brightness or automatically save the previous value.
 
 ```bash
-adb connect 192.168.40.61:5555
-adb -s 192.168.40.61:5555 shell input keyevent 224
-adb -s 192.168.40.61:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
+adb -s 192.168.30.200:5555 shell pm list packages
+adb -s 192.168.30.200:5555 shell settings get system screen_brightness
+adb -s 192.168.30.200:5555 shell am force-stop com.immichframe.immichframe
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness 0
+```
+
+Confirm the display is dark and ImmichFrame stays stopped. Leave it in this state
+for a meaningful interval (ideally overnight), then reconnect and test daytime
+brightness/start. Replace `128` with your chosen daytime brightness:
+
+```bash
+adb connect 192.168.30.200:5555
+adb -s 192.168.30.200:5555 shell input keyevent 224
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness 128
+adb -s 192.168.30.200:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
 Test a reboot, reconnect after the frame has booted, then check:
 
 ```bash
-adb -s 192.168.40.61:5555 reboot
+adb -s 192.168.30.200:5555 reboot
 # Wait for the device to boot before the next commands.
-adb connect 192.168.40.61:5555
-adb -s 192.168.40.61:5555 shell getprop sys.boot_completed
-adb -s 192.168.40.61:5555 shell cat /proc/sys/kernel/random/boot_id
-adb -s 192.168.40.61:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
+adb connect 192.168.30.200:5555
+adb -s 192.168.30.200:5555 shell getprop sys.boot_completed
+adb -s 192.168.30.200:5555 shell cat /proc/sys/kernel/random/boot_id
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
+adb -s 192.168.30.200:5555 shell settings put system screen_brightness 128
+adb -s 192.168.30.200:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
 `sys.boot_completed` must return `1`, and the activity start should report
@@ -98,17 +129,18 @@ be temporary. Frameo persistence varies by firmware; some require USB again
 after every reboot. This container cannot reconnect to a disabled ADB service.
 Do not enable scheduled reboot until you have verified persistence. You can use
 `"morning_action": "restart_app"` instead, which wakes and restarts the app without
-rebooting, but ADB must still remain reachable while the screen is asleep.
+rebooting, but ADB must still remain reachable overnight.
 
-Keycode 223 is an explicit sleep request, not the power toggle. OEM firmware can
-ignore it or turn off only part of the display hardware. If it does not turn the
-backlight off, stop here and diagnose the device's display controls before relying
-on this schedule. A black image or brightness zero is not necessarily backlight off.
+The controller does not send keycode 223 (SLEEP): on some frame firmware it also
+makes network ADB unreachable until a physical reboot. Brightness zero works on
+the tested frames, but other firmware may clamp it to a visible minimum. Confirm
+the physical result on every model; a black launcher alone does not turn off the
+backlight. Keep Android's automatic sleep/screensaver disabled in the device
+settings so it does not independently put the frame to sleep overnight.
 
-If ImmichFrame is configured as the HOME launcher, Android may relaunch it when
-force-stopped. Other launchers, kiosk tools, and app wake locks may also interfere.
-Observe one full night/morning cycle; disable conflicting app schedules where appropriate.
-The controller sends commands but does not assert the physical display is off.
+Observe one full night/morning cycle; disable conflicting app schedules or kiosk
+tools where appropriate. The controller sends commands but does not assert the
+physical display is off.
 
 ## 2. Prepare TrueNAS storage and build
 
@@ -196,7 +228,7 @@ python /app/controller.py status
 adb devices -l
 ```
 
-Logs record sleep commands, reboot requests, confirmed launches, and errors.
+Logs record night-mode commands, reboot requests, confirmed launches, and errors.
 Status shows each frame's latest result and timestamp. Docker health only confirms
 the scheduler is running; it does not mean every frame is reachable or advancing
 photos. Docker also does not restart a container merely because it is unhealthy.
@@ -214,8 +246,7 @@ controller can finish startup. Do not delete state to fix connection failures.
 
 To reboot a frame from your browser, sign in and use its Reboot frame button.
 To manually restart only an app during the day, use the force-stop and start commands
-from section 1 in the container shell. During the night, the scheduler will send
-sleep again within the configured recheck interval.
+from section 1 in the container shell. During the night, the scheduler will stop the app and set brightness to zero again within the configured recheck interval.
 
 Use DHCP reservations. On UniFi, permit the TrueNAS container's effective source
 IP (normally the TrueNAS LAN IP with bridge networking) to reach only the frames'
@@ -278,7 +309,7 @@ python -m unittest -v
 
 Tests cover wake/sleep boundaries, overnight windows, repeated DST hours, reboot
 deduplication after a failed command/container restart, retrying a failed launch
-without another reboot, sleep despite force-stop failure, corrupt state, and
+without another reboot, dimming despite force-stop failure, corrupt state, and
 app-only morning mode. Additional tests cover authenticated access, CSRF, password
 changes, logout, escaped device errors, duplicate manual requests, concurrent
 operation protection, restart recovery, nighttime behavior, and manual-job timeouts.
@@ -287,7 +318,7 @@ They do not validate a Docker build or real frame firmware.
 ## References
 
 - Android ADB and activity-manager commands: https://developer.android.com/tools/adb
-- Sleep/wakeup key semantics: https://developer.android.com/reference/android/view/KeyEvent
+- Wakeup key semantics: https://developer.android.com/reference/android/view/KeyEvent
 - ImmichFrame Android/Frameo instructions: https://github.com/immichFrame/ImmichFrame/blob/main/docs/docs/getting-started/apps.md
 - Frameo network ADB notes: https://docs.immichkiosk.app/misc/frameo/
 - TrueNAS custom applications: https://apps.truenas.com/managing-apps/installing-custom-apps/

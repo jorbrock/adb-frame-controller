@@ -14,6 +14,7 @@
       "wake": "07:00",
       "sleep": "22:00",
       "morning_action": "reboot",
+      "day_brightness": 128,
       "boot_delay_seconds": 60,
       "night_recheck_seconds": 300
     },
@@ -25,6 +26,7 @@
       "wake": "07:05",
       "sleep": "22:00",
       "morning_action": "reboot",
+      "day_brightness": 128,
       "boot_delay_seconds": 60,
       "night_recheck_seconds": 300
     }

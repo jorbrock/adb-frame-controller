@@ -80,14 +80,64 @@ class RecoveryTests(unittest.TestCase):
         frame.adb.run.assert_called_once_with("reboot")
         self.assertNotIn("completed_window", frame.state)
 
-    def test_night_attempts_sleep_even_if_stop_fails(self):
+    def test_night_attempts_dimming_even_if_stop_fails(self):
         self.mock_time.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
         frame = self.frame()
-        frame.adb.shell.side_effect = [RuntimeError("stop failed"), ""]
+        frame.adb.shell.side_effect = [RuntimeError("stop failed"), "", ""]
         with self.assertRaisesRegex(RuntimeError, "stop failed"):
             frame.tick()
-        frame.adb.shell.assert_any_call("input", "keyevent", "223")
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness_mode", "0")
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "0")
+        self.assertFalse(any(call.args == ("input", "keyevent", "223")
+                             for call in frame.adb.shell.call_args_list))
         frame.adb.run.assert_not_called()
+
+    def test_night_rechecks_and_retries_failed_brightness(self):
+        self.mock_time.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
+        frame = self.frame()
+        with patch.object(c.time, "monotonic", return_value=1000):
+            frame.adb.shell.side_effect = ["", "", RuntimeError("brightness failed")]
+            with self.assertRaisesRegex(RuntimeError, "brightness failed"):
+                frame.tick()
+            self.assertEqual(frame.last_night, 0)
+            frame.adb.shell.side_effect = None
+            frame.tick()
+            self.assertEqual(frame.last_night, 1000)
+            frame.adb.shell.reset_mock()
+            frame.tick()
+            frame.adb.shell.assert_not_called()
+        with patch.object(c.time, "monotonic", return_value=1300):
+            frame.tick()
+            frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "0")
+
+    def test_launch_restores_day_brightness_before_start(self):
+        for brightness in (None, 200):
+            with self.subTest(brightness=brightness):
+                if brightness is not None:
+                    self.cfg["day_brightness"] = brightness
+                frame = self.frame()
+                frame.adb.shell.return_value = "Status: ok"
+                frame.launch()
+                calls = [call.args for call in frame.adb.shell.call_args_list]
+                mode = ("settings", "put", "system", "screen_brightness_mode", "0")
+                level = ("settings", "put", "system", "screen_brightness", str(brightness or 128))
+                start = ("am", "start", "-W", "-n", self.cfg["component"])
+                self.assertLess(calls.index(mode), calls.index(level))
+                self.assertLess(calls.index(level), calls.index(start))
+
+    def test_brightness_failure_prevents_morning_completion(self):
+        self.cfg["morning_action"] = "restart_app"
+        frame = self.frame()
+        def shell(*args):
+            if args[:4] == ("settings", "put", "system", "screen_brightness"):
+                raise RuntimeError("brightness failed")
+            return "1"
+        frame.adb.shell.side_effect = shell
+        with self.assertRaisesRegex(RuntimeError, "brightness failed"):
+            frame.tick()
+        self.assertNotIn("completed_window", frame.state)
+        self.assertFalse(any(call.args[:2] == ("am", "start")
+                             for call in frame.adb.shell.call_args_list))
 
     def test_corrupt_state_does_not_reset_reboot_history(self):
         (c.DATA / "test.state.json").write_text("broken")

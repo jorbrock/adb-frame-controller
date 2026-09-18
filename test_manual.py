@@ -40,6 +40,7 @@ class ManualTests(unittest.TestCase):
         frame.tick()
         frame.adb.run.assert_called_once_with("reboot")
         frame.adb.shell.assert_any_call("am", "start", "-W", "-n", self.cfg["component"])
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "128")
 
     def test_duplicate_busy_cooldown_and_lock(self):
         frame = self.frame()
@@ -67,14 +68,17 @@ class ManualTests(unittest.TestCase):
         recovered.tick()
         self.assertEqual(recovered.state["manual"]["phase"], "completed")
 
-    def test_night_reboot_returns_to_sleep(self):
+    def test_night_reboot_returns_to_zero_brightness(self):
         self.clock.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
         frame = self.frame()
         frame.request_reboot("a" * 32)
         frame.tick()
         frame.adb.boot_id.return_value = "new-boot"
         frame.tick()
-        frame.adb.shell.assert_any_call("input", "keyevent", "223")
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness_mode", "0")
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "0")
+        self.assertFalse(any(call.args == ("input", "keyevent", "223")
+                             for call in frame.adb.shell.call_args_list))
         self.assertFalse(any(call.args[:2] == ("am", "start") for call in frame.adb.shell.call_args_list))
 
     def test_scheduler_disabled_still_allows_manual_reboot(self):

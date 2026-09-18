@@ -96,6 +96,7 @@ def load_config():
         if frame["morning_action"] not in ("reboot", "restart_app"):
             raise ValueError("morning_action must be reboot or restart_app")
         for key, default, low, high in (
+            ("day_brightness", 128, 1, 255),
             ("boot_delay_seconds", 60, 0, 600),
             ("night_recheck_seconds", 300, 30, 3600),
         ):
@@ -172,19 +173,10 @@ class Frame:
             if time.monotonic() - self.last_night < self.cfg["night_recheck_seconds"]:
                 return
             self.adb.connect()
-            # Try sleep even if force-stop fails; aggregate errors afterwards.
-            errors = []
-            for args in (("am", "force-stop", self.cfg["package"]),
-                         ("input", "keyevent", "223")):
-                try:
-                    self.adb.shell(*args)
-                except Exception as exc:
-                    errors.append(str(exc))
-            if errors:
-                raise RuntimeError("; ".join(errors))
+            self.night()
             self.last_night = time.monotonic()
-            self.status("sleep_commands_sent", mode=mode)
-            LOG.info("%s: app stopped, sleep command sent", self.cfg["name"])
+            self.status("night_commands_sent", mode=mode)
+            LOG.info("%s: app stopped, brightness set to zero", self.cfg["name"])
             return
         if self.state.get("completed_window") == token:
             # No claim that a running process is still advancing photographs.
@@ -224,9 +216,25 @@ class Frame:
         self.status("morning_sequence_completed", mode=mode)
         LOG.info("%s: morning application launch confirmed", self.cfg["name"])
 
+    def night(self):
+        # Attempt every action even if an earlier command fails.
+        errors = []
+        for args in (("am", "force-stop", self.cfg["package"]),
+                     ("settings", "put", "system", "screen_brightness_mode", "0"),
+                     ("settings", "put", "system", "screen_brightness", "0")):
+            try:
+                self.adb.shell(*args)
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
     def launch(self):
         self.adb.shell("input", "keyevent", "224")
         self.adb.shell("am", "force-stop", self.cfg["package"])
+        self.adb.shell("settings", "put", "system", "screen_brightness_mode", "0")
+        self.adb.shell("settings", "put", "system", "screen_brightness",
+                       str(self.cfg.get("day_brightness", 128)))
         output = self.adb.shell("am", "start", "-W", "-n", self.cfg["component"])
         if re.search(r"error|exception|unable to resolve", output, re.I) or "Status: ok" not in output:
             raise RuntimeError(f"Application launch not confirmed: {output[:600]}")
@@ -287,9 +295,8 @@ class Frame:
                 return True
             mode, token = window(datetime.now(self.zone), self.cfg)
             if self.scheduled and mode == "night":
-                self.adb.shell("am", "force-stop", self.cfg["package"])
-                self.adb.shell("input", "keyevent", "223")
-                message = "Reboot completed; sleep requested for the night schedule"
+                self.night()
+                message = "Reboot completed; app stopped and brightness set to zero for the night schedule"
                 self.last_night = time.monotonic()
             else:
                 self.launch()
