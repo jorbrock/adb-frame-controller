@@ -234,14 +234,14 @@ These commands require appropriate host permissions:
 
 ```bash
 mkdir -p /mnt/tank/apps/frame-controller/data
-chown 568:568 /mnt/tank/apps/frame-controller/data
+chown 3019:3019 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
 docker build -t frame-controller:1.2.0 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
 packages, and the Flask/Waitress Python dependencies. If your dataset uses ACLs,
-grant UID/GID 568 read/write access to data using the TrueNAS ACL editor.
+grant UID/GID 3019 read/write access to data using the TrueNAS ACL editor.
 Preserve the data directory:
 it contains ADB private keys under `.android`, saved frame settings, login credentials,
 and reboot history. Restrict its access.
@@ -309,6 +309,34 @@ set `SCHEDULE_ENABLED: "true"` in the app YAML and apply it to recreate the
 container. On a Compose host, use `docker compose up -d`. Remember: starting during
 daytime triggers a catch-up reboot. You can stagger wake times to spread load on
 the photo server.
+
+### Application file permissions
+
+The image runs as UID/GID `3019:3019`, matching `user:` in Compose. The Dockerfile
+sets application directories to `755` and application files to `644`, then checks
+that the runtime user can import the application. This avoids inheriting
+restrictive source permissions from a NAS dataset.
+
+If an older image reports `python: can't open file '/app/controller.py':
+[Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
+
+```bash
+docker build --no-cache -t frame-controller:1.2.0 .
+```
+
+Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
+host, use `docker compose up -d --force-recreate`. Restarting an existing container
+does not replace its image. You can check the rebuilt image without starting any
+frame workers or mounting the data volume:
+
+```bash
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:1.2.0 -c "import controller, webui; print('Application readable')"
+```
+
+The host data dataset separately needs read/write access for UID/GID `3019:3019`,
+including existing state files and ADB keys. Adjust its TrueNAS ACLs if needed.
+If choosing another UID/GID, update the Dockerfile, Compose user, and data dataset
+permissions together, then rebuild and recreate the container.
 
 ## Monitoring and recovery
 
