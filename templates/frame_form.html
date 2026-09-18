@@ -28,7 +28,7 @@
       <div class="field"><label for="night_recheck_seconds">Night recheck (seconds)</label><input id="night_recheck_seconds" name="night_recheck_seconds" type="number" min="30" max="3600" step="1" value="{{ frame.night_recheck_seconds }}" required><small>30–3600 seconds between night commands.</small></div>
     </div>
   </fieldset>
-  <p class="muted">When scheduling is enabled, new frames and schedule changes can trigger commands immediately. A completed morning sequence is preserved; app and brightness changes take effect on the next launch. Global scheduling and timezone remain in the deployment config.</p>
+  <p class="muted">When scheduling is enabled, new frames and schedule changes can trigger commands immediately. A completed morning sequence is preserved; app and brightness changes take effect on the next launch. Global scheduling and timezone are set through environment variables.</p>
   <div class="form-actions"><a class="button quiet" href="{{ url_for('index') }}">Cancel</a><button class="primary" type="submit">{{ 'Save changes' if name else 'Add frame' }}</button></div>
 </form>
 {% endblock %}

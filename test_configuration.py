@@ -1,6 +1,7 @@
 """Configuration persistence, live workers, and authenticated editing."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -12,10 +13,72 @@ from webui import create_app
 
 
 def config():
-    return c.validate_config(dict(timezone="UTC", enabled=False, frames=[dict(
+    return c.validate_config(dict(timezone="UTC", enabled=False,
+                                  web=dict(enabled=True, secure_cookie=False), frames=[dict(
         name="living-room", address="192.0.2.1:5555", package="com.example.frame",
         component="com.example.frame/.MainActivity", wake="07:00", sleep="22:00",
     )]))
+
+
+class EnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name)
+        data_patch = patch.object(c, "DATA", self.data)
+        data_patch.start()
+        self.addCleanup(data_patch.stop)
+        env_patch = patch.dict(os.environ, {}, clear=True)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+    def test_defaults_work_without_any_config_file(self):
+        self.assertEqual(c.load_config(), dict(
+            enabled=False, timezone="UTC", web=dict(enabled=True, secure_cookie=False), frames=[]))
+        self.assertEqual(list(self.data.iterdir()), [])
+
+    def test_environment_controls_scheduler_timezone_and_cookie(self):
+        (self.data / "frames.json").write_text(json.dumps(config()["frames"]))
+        os.environ.update(SCHEDULE_ENABLED="true", TZ="America/Los_Angeles",
+                          WEB_ENABLED="false", WEB_SECURE_COOKIE="true")
+        loaded = c.load_config()
+        self.assertEqual(loaded["web"], dict(enabled=False, secure_cookie=True))
+        registry = c.FrameRegistry(loaded, self.data)
+        frame = registry.frames["living-room"]
+        self.assertTrue(frame.scheduled)
+        self.assertEqual(frame.zone.key, "America/Los_Angeles")
+        self.assertTrue(create_app(loaded, registry, self.data).config["SESSION_COOKIE_SECURE"])
+
+    def test_boolean_values_are_parsed_explicitly(self):
+        for name, path in (("SCHEDULE_ENABLED", ("enabled",)),
+                           ("WEB_ENABLED", ("web", "enabled")),
+                           ("WEB_SECURE_COOKIE", ("web", "secure_cookie"))):
+            for value, expected in (("true", True), ("false", False), (" TRUE ", True), ("False", False)):
+                with self.subTest(name=name, value=value), patch.dict(os.environ, {name: value}):
+                    result = c.load_config()
+                    for key in path:
+                        result = result[key]
+                    self.assertIs(result, expected)
+            for value in ("", "tru", "1", "0", "yes"):
+                with self.subTest(name=name, value=value), patch.dict(os.environ, {name: value}):
+                    with self.assertRaisesRegex(ValueError, f"{name} must be true or false"):
+                        c.load_config()
+
+    def test_invalid_timezone_is_rejected(self):
+        for value in ("", "Invalid/Zone", "/etc/passwd"):
+            with self.subTest(value=value), patch.dict(os.environ, {"TZ": value}):
+                with self.assertRaisesRegex(ValueError, "TZ must be a valid IANA timezone"):
+                    c.load_config()
+
+    def test_legacy_config_environment_and_file_are_ignored(self):
+        source = self.data / "config.json"
+        os.environ["CONFIG"] = str(source)
+        self.assertEqual(c.load_config()["frames"], [])
+        for content in (json.dumps({**config(), "enabled": True}), "invalid JSON"):
+            with self.subTest(content=content):
+                source.write_text(content)
+                self.assertEqual(c.load_config(), dict(
+                    enabled=False, timezone="UTC", web=dict(enabled=True, secure_cookie=False), frames=[]))
 
 
 class RegistryTests(unittest.TestCase):
@@ -24,33 +87,40 @@ class RegistryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.data = Path(self.temp.name)
         self.config = config()
-        self.source = self.data / "config.json"
-        self.source.write_text(json.dumps(self.config))
         self.registry = c.FrameRegistry(self.config, self.data)
 
     def change(self, name, values):
         self.registry.change(name, values, self.registry.revision)
 
     def load(self):
-        with patch.object(c, "DATA", self.data), patch.object(c, "CONFIG", str(self.source)):
+        with patch.object(c, "DATA", self.data), patch.dict(os.environ, {}, clear=True):
             return c.load_config()
 
-    def test_file_config_seeds_ui_and_saved_list_survives_restart(self):
-        self.assertEqual(self.load(), self.config)
-        original = self.source.read_bytes()
+    def test_missing_frames_file_starts_empty_and_saved_list_survives_restart(self):
+        self.assertEqual(self.load(), {**self.config, "frames": []})
+        self.registry = c.FrameRegistry(self.load(), self.data)
+        self.assertEqual(self.registry.snapshots(), [])
+        self.assertFalse((self.data / "frames.json").exists())
         frame = {**self.config["frames"][0], "name": "kitchen", "address": "192.0.2.2:5555"}
         self.change(None, frame)
         restored = c.FrameRegistry(self.load(), self.data)
-        self.assertEqual(set(restored.frames), {"living-room", "kitchen"})
-        self.assertEqual(self.source.read_bytes(), original)
-        self.change("living-room", None)
+        self.assertEqual(set(restored.frames), {"kitchen"})
+        self.assertFalse((self.data / "config.json").exists())
         self.change("kitchen", None)
         self.assertEqual(self.load()["frames"], [])
         self.assertEqual(self.registry.snapshots(), [])
         self.change(None, frame)
         self.assertEqual(self.load()["frames"], [frame])
 
-    def test_corrupt_override_fails_closed(self):
+    def test_saved_frames_are_the_only_frame_source(self):
+        self.assertEqual(self.load()["frames"], [])
+        saved = [{**self.config["frames"][0], "name": "kitchen"}]
+        for frames in ([], saved):
+            with self.subTest(frames=frames):
+                (self.data / "frames.json").write_text(json.dumps(frames))
+                self.assertEqual(self.load()["frames"], frames)
+
+    def test_corrupt_frames_file_fails_closed(self):
         for value in ('invalid json', '{}', '[null]'):
             with self.subTest(value=value):
                 (self.data / "frames.json").write_text(value)

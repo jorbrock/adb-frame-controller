@@ -10,8 +10,11 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/adb-frame-controller,type=bind",
   "workspaceFolder": "/workspaces/adb-frame-controller",
   "containerEnv": {
-    "CONFIG": "/workspaces/adb-frame-controller/.devcontainer/local/config.json",
-    "DATA_DIR": "/workspaces/adb-frame-controller/.devcontainer/local/data"
+    "DATA_DIR": "/workspaces/adb-frame-controller/.devcontainer/local/data",
+    "SCHEDULE_ENABLED": "false",
+    "TZ": "America/Los_Angeles",
+    "WEB_ENABLED": "true",
+    "WEB_SECURE_COOKIE": "false"
   },
   "forwardPorts": [8080],
   "portsAttributes": {

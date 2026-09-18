@@ -14,12 +14,11 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
-CONFIG = os.environ.get("CONFIG", "/config/config.json")
 
 
 def atomic_json(path, value):
@@ -61,11 +60,26 @@ def window(now, frame):
     return ("day" if active else "night"), date.isoformat()
 
 
+def env_bool(name, default):
+    value = os.environ.get(name, str(default)).strip().lower()
+    if value not in ("true", "false"):
+        raise ValueError(f"{name} must be true or false")
+    return value == "true"
+
+
 def load_config():
-    config = json.loads(Path(CONFIG).read_text())
-    # The read-only deployment config seeds the UI until its first saved change.
-    config["frames"] = read_json(DATA / "frames.json", config.get("frames", []))
-    return validate_config(config)
+    timezone = os.environ.get("TZ", "UTC")
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("TZ must be a valid IANA timezone, such as UTC or America/Los_Angeles") from exc
+    return validate_config(dict(
+        enabled=env_bool("SCHEDULE_ENABLED", False),
+        timezone=timezone,
+        web=dict(enabled=env_bool("WEB_ENABLED", True),
+                 secure_cookie=env_bool("WEB_SECURE_COOKIE", False)),
+        frames=read_json(DATA / "frames.json", []),
+    ))
 
 
 def validate_config(config):
@@ -494,7 +508,7 @@ def main():
         signal.signal(sig, lambda *_: STOP.set())
     workers = []
     # Load all state before any device receives commands. Manual control also
-    # works with scheduling disabled; existing configuration stays compatible.
+    # works with scheduling disabled.
     registry = FrameRegistry(config, DATA)
     registry.start()
     if config["web"].get("enabled", False):
@@ -507,7 +521,7 @@ def main():
         workers.append(worker)
         LOG.info("Web interface listening on port 8080")
     if not config.get("enabled", False):
-        LOG.warning("Scheduling disabled. Authorize ADB and test frames, then enable config and restart.")
+        LOG.warning("Scheduling disabled. Authorize ADB and test frames, then set SCHEDULE_ENABLED=true and recreate the container.")
     while not STOP.is_set():
         if not registry.healthy() or any(not worker.is_alive() for worker in workers):
             raise RuntimeError("A frame worker exited unexpectedly")

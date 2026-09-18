@@ -7,11 +7,14 @@ services:
     user: "568:568"
     environment:
       HOME: /data
+      SCHEDULE_ENABLED: "false"
+      TZ: America/Los_Angeles
+      WEB_ENABLED: "true"
+      WEB_SECURE_COOKIE: "false"
     ports:
       # Replace with your TrueNAS LAN IP; publish only on this interface.
       - "192.168.40.10:8080:8080"
     volumes:
-      - /mnt/tank/apps/frame-controller/config:/config:ro
       - /mnt/tank/apps/frame-controller/data:/data
     read_only: true
     tmpfs:
@@ -22,8 +25,3 @@ services:
       - no-new-privileges:true
     mem_limit: 256m
     pids_limit: 128
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"

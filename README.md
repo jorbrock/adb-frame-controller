@@ -39,18 +39,17 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   The UI uses only bundled CSS/JavaScript, with no CDN or external services.
 - Direct LAN HTTP is supported. HTTP does not encrypt the password or session in
   transit; use a unique local password. If you later use your local reverse proxy
-  with HTTPS, set `web.secure_cookie` to `true` and restart the app. Keep it false
+  with HTTPS, set `WEB_SECURE_COOKIE` to `"true"` and recreate the container. Keep it false
   for direct HTTP. Preserve the existing subnet restrictions.
 
 ### Saving frame settings
 
-The `frames` array in `/config/config.json` supplies the initial frame list.
-The first successful UI change saves the complete list to `/data/frames.json`.
-After that, this saved list takes precedence over the config file's `frames`
-array, including after restarts. The config mount can remain read-only; no
-Compose changes are required. Back up the data directory along with your config.
-Invalid saved settings fail validation rather than silently reverting to an
-older list of devices.
+Frame settings are stored only in `/data/frames.json` (under `DATA_DIR` when
+configured). If that file is missing, the controller starts with no frames;
+use **Add frame** in the web UI to create the first one. Every successful UI
+change saves the complete list, which is loaded again on restart. No `config.json`
+file or `/config` mount is needed. Back up the data directory and your Compose
+file. Invalid saved settings fail validation instead of being discarded.
 
 Changes apply to live workers. Adding a frame while scheduling is enabled can
 immediately start its morning sequence or apply night mode. Edits preserve reboot
@@ -62,10 +61,34 @@ Removing a frame stops future commands without changing its current display.
 Its state/status files are retained; adding it again under the same name restores
 its history. Use the same name for the same physical frame.
 
-Global `enabled`, `timezone`, and `web` options remain in `/config/config.json`
-and require a controller restart. To return to file-managed frame settings, stop
-the controller, back up and remove `/data/frames.json`, edit the config's `frames`
-array, then start the controller. Do not edit saved settings files while it is running.
+To edit frame settings manually, stop the controller, back up and edit the JSON
+array in `/data/frames.json`, then start the controller. Do not edit saved settings
+files while it is running.
+
+### Environment settings
+
+Set global options in the service's `environment:` section in `compose.yaml`:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCHEDULE_ENABLED` | `"false"` | Enable scheduled wake/sleep actions. Manual reboot remains available when false. |
+| `TZ` | `UTC` | IANA timezone for frame schedules; the sample Compose file uses `America/Los_Angeles`. |
+| `WEB_ENABLED` | `"true"` | Serve the authenticated web UI on port 8080. |
+| `WEB_SECURE_COOKIE` | `"false"` | Restrict session cookies to HTTPS; enable when using an HTTPS reverse proxy. |
+| `DATA_DIR` | `/data` | Directory containing frame settings, reboot history, and web credentials. Keep `/data` with the provided volume mount. |
+
+Quote boolean values in YAML as shown. The application accepts `true` and `false`
+(case-insensitive); invalid values or timezone names fail validation at startup.
+After changing environment settings, apply the updated app YAML in TrueNAS or run
+`docker compose up -d` on a Compose host to recreate the container. A plain
+container restart does not pick up changes to Compose environment variables.
+
+When upgrading, replace the old global JSON options with `SCHEDULE_ENABLED`, `TZ`,
+`WEB_ENABLED`, and `WEB_SECURE_COOKIE`, and remove the `/config` volume mount.
+The old `CONFIG` variable and `config.json` files are ignored. Existing
+`/data/frames.json` settings continue to work. If frames were configured only in
+the old config file, move that `frames` array into `/data/frames.json` while the
+controller is stopped, or add the frames through the web UI.
 
 ## Behavior
 
@@ -87,7 +110,9 @@ array, then start the controller. Do not edit saved settings files while it is r
   Starting it at night immediately applies night mode. UI schedule changes apply live.
 - Spring DST gaps take effect at the first available time after the scheduled
   boundary. Repeated fall hours share one wake-window date and do not add a reboot.
-- JSON status files, stdout logs, and a Docker scheduler heartbeat health check.
+- JSON status files, console logs (stdout/stderr), and a Docker scheduler heartbeat health check.
+  Compose inherits the host's default logging driver, allowing your existing
+  container log collector to collect the console output.
 - Non-root container, no privileged mode, Docker socket, USB access, or host networking
   required. Port 8080 serves the optional web UI. LAN routing to each frame is required.
 
@@ -180,25 +205,24 @@ a TrueNAS administrative shell in the extracted `frame-controller` directory.
 These commands require appropriate host permissions:
 
 ```bash
-mkdir -p /mnt/tank/apps/frame-controller/config
 mkdir -p /mnt/tank/apps/frame-controller/data
-cp config.example.json /mnt/tank/apps/frame-controller/config/config.json
 chown 568:568 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
 docker build -t frame-controller:1.1.0 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
-packages, and the Flask/Waitress Python dependencies. If your dataset uses ACLs, grant UID/GID 568 read access to configuration
-and write access to data using the TrueNAS ACL editor. Preserve the data directory:
+packages, and the Flask/Waitress Python dependencies. If your dataset uses ACLs,
+grant UID/GID 568 read/write access to data using the TrueNAS ACL editor.
+Preserve the data directory:
 it contains ADB private keys under `.android`, saved frame settings, login credentials,
 and reboot history. Restrict its access.
 
-Edit `config/config.json` with your timezone. Set `frames` to `[]` to add frames
-through the web UI after setup, or fill in your initial frame IPs and schedules.
-Names and addresses must be unique. The sample timezone is `America/Los_Angeles`.
-Leave `enabled` false initially.
-Edit the two bind-mount paths in `compose.yaml` to match your actual dataset.
+Set `TZ` under `environment:` in `compose.yaml` to your timezone; the sample is
+`America/Los_Angeles`. Leave `SCHEDULE_ENABLED: "false"` initially. After setting
+up the web login, use **Add frame** to configure your frame IPs and schedules.
+Names and addresses must be unique. Edit the data bind-mount path in `compose.yaml`
+to match your actual dataset.
 Also replace the example TrueNAS IP in the web port mapping with your LAN IP.
 
 ## 3. Install as a TrueNAS app
@@ -246,10 +270,17 @@ Still in the container shell, validate configuration:
 python /app/controller.py validate
 ```
 
-Set the local web password using the command in the upgrade section above.
-After the single-frame tests pass, set `enabled` to `true` in the host config file
-and restart the app. Remember: starting during daytime triggers a catch-up reboot.
-The example staggers wake times slightly to spread load on the photo server.
+Set the local web password in the container shell:
+
+```bash
+python /app/webui.py set-password --username admin
+```
+
+Sign in to the web UI and add your frames. After the single-frame tests pass,
+set `SCHEDULE_ENABLED: "true"` in the app YAML and apply it to recreate the
+container. On a Compose host, use `docker compose up -d`. Remember: starting during
+daytime triggers a catch-up reboot. You can stagger wake times to spread load on
+the photo server.
 
 ## Monitoring and recovery
 
@@ -299,11 +330,13 @@ with ADB, Git, globally installed Python dependencies, and a non-root `vscode` u
 VS Code includes Python debugging and unittest discovery, and forwards port 8080.
 The configuration follows the [VS Code Dev Containers workflow](https://code.visualstudio.com/docs/devcontainers/create-dev-container).
 
-The image build installs `requirements.txt` globally. Workspace setup copies `config.example.json` to
-`.devcontainer/local/config.json` only if it does not already exist. Edit that
-local copy for development. Scheduling starts disabled in the example; manual
-web actions still control the configured devices. The controller does not start
-automatically when you open the container.
+The image build installs `requirements.txt` globally. Development environment
+settings live in `containerEnv` in `.devcontainer/devcontainer.json`; scheduling
+starts disabled and the web UI is enabled. Rebuild the dev container after changing
+these values. For a temporary terminal session, export a setting before starting
+the controller, for example `export TZ=Europe/London`. Manual web actions still
+control the configured devices. The controller does not start automatically when
+you open the container.
 
 From the container terminal:
 
@@ -320,7 +353,7 @@ in Run and Debug and press F5 instead of starting `controller.py run` manually.
 Frame settings saved through the web UI apply live. Stop and restart the controller
 after changing global configuration or Python code.
 
-Development configuration, state, login credentials, and ADB keys are kept in
+Development frame settings, state, login credentials, and ADB keys are kept in
 the Git-ignored `.devcontainer/local/` directory and survive container rebuilds.
 The container's `~/.android` links to that directory's `data/.android` folder.
 For real-device testing, the container needs LAN access to the frames; use
@@ -346,10 +379,11 @@ without another reboot, dimming despite force-stop failure, corrupt state, and
 app-only morning mode. Additional tests cover authenticated access, CSRF, password
 changes, logout, escaped device errors, duplicate manual requests, concurrent
 operation protection, restart recovery, nighttime behavior, and manual-job timeouts.
-Configuration tests cover authenticated add/edit/remove flows, validation, saved
-settings precedence, empty lists, rename history, storage failures, stale forms,
-concurrent edits, and live worker startup/removal. They do not validate a Docker
-build or real frame firmware.
+Configuration tests cover authenticated add/edit/remove flows, validation,
+loading frame settings exclusively from the data directory, environment defaults,
+boolean/timezone validation, ignored legacy config files, empty starts, rename
+history, storage failures, stale forms, concurrent edits, and live worker
+startup/removal. They do not validate a Docker build or real frame firmware.
 
 ## References
 
