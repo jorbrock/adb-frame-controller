@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Edit frame' if name else 'Add frame' }} · Frame Controller{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">FRAME SETTINGS</p><h1>{{ 'Edit frame.' if name else 'Add a frame.' }}</h1>
+  <p class="intro">Save connection, schedule, and display settings here. No restart is needed.</p></div>
+</section>
+{% if error %}<p class="notice error" role="alert">{{ error }} <a href="{{ request.path }}">Reload form</a></p>{% endif %}
+<form class="settings-form" method="post">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="revision" value="{{ revision }}">
+  <fieldset><legend>Connection</legend>
+    <div class="settings-grid">
+      <div class="field"><label for="name">Name</label><input id="name" name="name" value="{{ frame.name }}" pattern="[A-Za-z0-9_\-]+" required aria-describedby="name-help"><small id="name-help">Unique name using letters, numbers, underscores, or dashes.</small></div>
+      <div class="field"><label for="address">ADB address</label><input id="address" name="address" value="{{ frame.address }}" placeholder="192.168.40.61:5555" required aria-describedby="address-help"><small id="address-help">IPv4 address or hostname, followed by a port. Authorize this controller on the frame first.</small></div>
+      <div class="field"><label for="package">App package</label><input id="package" name="package" value="{{ frame.package }}" required></div>
+      <div class="field"><label for="component">Activity component</label><input id="component" name="component" value="{{ frame.component }}" required aria-describedby="component-help"><small id="component-help">Package/activity, for example com.immichframe.immichframe/.MainActivity.</small></div>
+    </div>
+  </fieldset>
+  <fieldset><legend>Schedule and display</legend>
+    <p class="muted">Times use {{ timezone }}. Overnight schedules are supported; wake and sleep must differ.</p>
+    <div class="settings-grid">
+      <div class="field"><label for="wake">Wake time</label><input id="wake" name="wake" type="time" value="{{ frame.wake }}" required></div>
+      <div class="field"><label for="sleep">Sleep time</label><input id="sleep" name="sleep" type="time" value="{{ frame.sleep }}" required></div>
+      <div class="field"><label for="morning_action">Morning action</label><select id="morning_action" name="morning_action" required><option value="reboot" {% if frame.morning_action == 'reboot' %}selected{% endif %}>Reboot frame</option><option value="restart_app" {% if frame.morning_action == 'restart_app' %}selected{% endif %}>Restart app only</option></select></div>
+      <div class="field"><label for="day_brightness">Day brightness</label><input id="day_brightness" name="day_brightness" type="number" min="1" max="255" step="1" value="{{ frame.day_brightness }}" required><small>1–255. Night brightness is zero.</small></div>
+      <div class="field"><label for="boot_delay_seconds">Boot delay (seconds)</label><input id="boot_delay_seconds" name="boot_delay_seconds" type="number" min="0" max="600" step="1" value="{{ frame.boot_delay_seconds }}" required><small>0–600 seconds after Android finishes booting.</small></div>
+      <div class="field"><label for="night_recheck_seconds">Night recheck (seconds)</label><input id="night_recheck_seconds" name="night_recheck_seconds" type="number" min="30" max="3600" step="1" value="{{ frame.night_recheck_seconds }}" required><small>30–3600 seconds between night commands.</small></div>
+    </div>
+  </fieldset>
+  <p class="muted">When scheduling is enabled, new frames and schedule changes can trigger commands immediately. A completed morning sequence is preserved; app and brightness changes take effect on the next launch. Global scheduling and timezone remain in the deployment config.</p>
+  <div class="form-actions"><a class="button quiet" href="{{ url_for('index') }}">Cancel</a><button class="primary" type="submit">{{ 'Save changes' if name else 'Add frame' }}</button></div>
+</form>
+{% endblock %}

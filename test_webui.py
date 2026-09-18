@@ -27,7 +27,9 @@ class WebTests(unittest.TestCase):
             name="living-room", address="192.0.2.1:5555", wake="07:00", sleep="22:00",
             boot_delay_seconds=60, mode="day", status={}, job={}, busy=False,
         )
-        self.app = create_app(dict(timezone="UTC", enabled=True), [self.frame], self.data)
+        config = dict(timezone="UTC", enabled=True)
+        registry = c.FrameRegistry(config, self.data, frames=[self.frame])
+        self.app = create_app(config, registry, self.data)
         self.app.config["TESTING"] = True
         self.client = self.app.test_client()
 

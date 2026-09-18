@@ -10,9 +10,14 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 
 ### Web behavior and local login
 
-- Lists only frames in your config, with address, wake/sleep times, recent
-  controller results, and manual reboot progress. Configuration editing remains
-  in the JSON file; there is no arbitrary-command endpoint or bulk reboot button.
+- Lists configured frames with address, wake/sleep times, recent controller
+  results, and manual reboot progress. Use **Add frame**, **Edit settings**, and
+  **Remove** to manage up to 50 frames without restarting the controller.
+- Frame forms cover name, ADB address, app package/activity, wake/sleep times,
+  morning action, day brightness, boot delay, and night recheck interval.
+  Removal requires a confirmation page. Empty configurations are supported.
+- Settings are validated before saving. Busy frames and active manual reboots
+  reject edits/removal; stale forms cannot overwrite newer changes.
 - Manual reboot runs independently per frame and is serialized with its scheduled
   work. It explicitly relaunches ImmichFrame after Android boots and the delay
   expires. At night, if scheduling is enabled, it stops the app and sets brightness to zero.
@@ -29,13 +34,38 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   `/data/web-auth.json`. Sessions expire after 12 hours and are invalidated when
   the container restarts or the password changes. Run `set-password` again to
   change/reset the account; no restart is needed for that change.
-- Login and reboot forms use CSRF tokens; state-changing operations require POST.
+- Login, reboot, and configuration forms use CSRF tokens; changes require POST.
   Cookies are HttpOnly and SameSite=Strict. Failed logins are rate limited.
   The UI uses only bundled CSS/JavaScript, with no CDN or external services.
 - Direct LAN HTTP is supported. HTTP does not encrypt the password or session in
   transit; use a unique local password. If you later use your local reverse proxy
   with HTTPS, set `web.secure_cookie` to `true` and restart the app. Keep it false
   for direct HTTP. Preserve the existing subnet restrictions.
+
+### Saving frame settings
+
+The `frames` array in `/config/config.json` supplies the initial frame list.
+The first successful UI change saves the complete list to `/data/frames.json`.
+After that, this saved list takes precedence over the config file's `frames`
+array, including after restarts. The config mount can remain read-only; no
+Compose changes are required. Back up the data directory along with your config.
+Invalid saved settings fail validation rather than silently reverting to an
+older list of devices.
+
+Changes apply to live workers. Adding a frame while scheduling is enabled can
+immediately start its morning sequence or apply night mode. Edits preserve reboot
+history, including when renaming a frame: a completed morning sequence does not
+run again just because settings changed. App and brightness changes take effect
+on the next app launch; schedule changes are evaluated on the next worker tick.
+An active manual reboot must finish or time out before editing or removal.
+Removing a frame stops future commands without changing its current display.
+Its state/status files are retained; adding it again under the same name restores
+its history. Use the same name for the same physical frame.
+
+Global `enabled`, `timezone`, and `web` options remain in `/config/config.json`
+and require a controller restart. To return to file-managed frame settings, stop
+the controller, back up and remove `/data/frames.json`, edit the config's `frames`
+array, then start the controller. Do not edit saved settings files while it is running.
 
 ## Behavior
 
@@ -54,7 +84,7 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   Connection and launch failures retry every 30 seconds.
 - The scheduler catches up after downtime. Enabling or first starting it during
   the day immediately begins that day's morning sequence, including a reboot.
-  Starting it at night immediately applies night mode. Schedule changes need a restart.
+  Starting it at night immediately applies night mode. UI schedule changes apply live.
 - Spring DST gaps take effect at the first available time after the scheduled
   boundary. Repeated fall hours share one wake-window date and do not add a reboot.
 - JSON status files, stdout logs, and a Docker scheduler heartbeat health check.
@@ -161,11 +191,13 @@ docker build -t frame-controller:1.1.0 .
 The image build requires internet access for the Python base image, Debian ADB
 packages, and the Flask/Waitress Python dependencies. If your dataset uses ACLs, grant UID/GID 568 read access to configuration
 and write access to data using the TrueNAS ACL editor. Preserve the data directory:
-it contains ADB private keys under `.android` and reboot history. Restrict its access.
+it contains ADB private keys under `.android`, saved frame settings, login credentials,
+and reboot history. Restrict its access.
 
-Edit `config/config.json` with your frame IPs, schedules, and timezone. Remove the
-second example frame or duplicate entries as needed. Names and addresses must be
-unique. The sample timezone is `America/Los_Angeles`. Leave `enabled` false initially.
+Edit `config/config.json` with your timezone. Set `frames` to `[]` to add frames
+through the web UI after setup, or fill in your initial frame IPs and schedules.
+Names and addresses must be unique. The sample timezone is `America/Los_Angeles`.
+Leave `enabled` false initially.
 Edit the two bind-mount paths in `compose.yaml` to match your actual dataset.
 Also replace the example TrueNAS IP in the web port mapping with your LAN IP.
 
@@ -285,7 +317,8 @@ python controller.py run
 Open `http://localhost:8080` once the controller is running, or use the forwarded
 address in VS Code's Ports panel. For breakpoints, select **Frame Controller**
 in Run and Debug and press F5 instead of starting `controller.py run` manually.
-Stop and restart the controller after changing configuration or Python code.
+Frame settings saved through the web UI apply live. Stop and restart the controller
+after changing global configuration or Python code.
 
 Development configuration, state, login credentials, and ADB keys are kept in
 the Git-ignored `.devcontainer/local/` directory and survive container rebuilds.
@@ -313,7 +346,10 @@ without another reboot, dimming despite force-stop failure, corrupt state, and
 app-only morning mode. Additional tests cover authenticated access, CSRF, password
 changes, logout, escaped device errors, duplicate manual requests, concurrent
 operation protection, restart recovery, nighttime behavior, and manual-job timeouts.
-They do not validate a Docker build or real frame firmware.
+Configuration tests cover authenticated add/edit/remove flows, validation, saved
+settings precedence, empty lists, rename history, storage failures, stale forms,
+concurrent edits, and live worker startup/removal. They do not validate a Docker
+build or real frame firmware.
 
 ## References
 

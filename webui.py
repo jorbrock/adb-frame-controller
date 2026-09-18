@@ -1,4 +1,4 @@
-"""One local account, signed session cookies, and per-frame reboot forms."""
+"""Authenticated frame configuration and reboot controls."""
 import argparse
 from collections import OrderedDict
 from datetime import timedelta
@@ -15,7 +15,7 @@ from flask import Flask, abort, flash, g, redirect, render_template, request, se
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
-def create_app(config, frames, data):
+def create_app(config, registry, data):
     app = Flask(__name__)
     app.config.update(
         SECRET_KEY=secrets.token_hex(32),
@@ -27,7 +27,6 @@ def create_app(config, frames, data):
         SESSION_REFRESH_EACH_REQUEST=False,
         MAX_CONTENT_LENGTH=8192,
     )
-    by_name = {frame.cfg["name"]: frame for frame in frames}
     attempts = OrderedDict()
     attempt_lock = threading.Lock()
 
@@ -99,7 +98,7 @@ def create_app(config, frames, data):
 
     @app.get("/")
     def index():
-        return render_template("index.html", frames=[frame.snapshot() for frame in frames],
+        return render_template("index.html", frames=registry.snapshots(),
                                timezone=config["timezone"], scheduled=config.get("enabled", False))
 
     @app.post("/logout")
@@ -109,19 +108,85 @@ def create_app(config, frames, data):
 
     @app.post("/frames/<name>/reboot")
     def reboot(name):
-        frame = by_name.get(name)
-        if frame is None:
+        try:
+            registry.configuration(name)
+        except KeyError:
             abort(404)
         token = request.form.get("request_id", "")
         if not re.fullmatch(r"[0-9a-f]{32}", token):
             abort(400, "Invalid request ID")
         try:
-            frame.request_reboot(token)
+            registry.request_reboot(name, token)
+        except KeyError:
+            abort(404)
         except RuntimeError as exc:
             flash(str(exc), "error")
         else:
             flash(f"Reboot requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
+
+    def configuration(name):
+        try:
+            return registry.configuration(name)
+        except KeyError:
+            abort(404)
+
+    def save_configuration(name, values, revision):
+        try:
+            registry.change(name, values, revision)
+        except KeyError:
+            abort(404)
+        except ValueError as exc:
+            return str(exc), 400
+        except RuntimeError as exc:
+            return str(exc), 409
+        except OSError:
+            app.logger.exception("Cannot save frame settings")
+            return "Could not save settings. Check that the data directory is writable and has free space.", 503
+        return None, 303
+
+    @app.route("/frames/new", methods=["GET", "POST"])
+    @app.route("/frames/<name>/edit", methods=["GET", "POST"])
+    def edit_frame(name=None):
+        values, revision = configuration(name)
+        if name is None:
+            values = dict(name="", address="", package="com.immichframe.immichframe",
+                          component="com.immichframe.immichframe/.MainActivity",
+                          wake="07:00", sleep="22:00", morning_action="reboot",
+                          day_brightness=128, boot_delay_seconds=60, night_recheck_seconds=300)
+        error, code = None, 200
+        if request.method == "POST":
+            revision = request.form.get("revision", "")
+            # Keep unknown file-based options intact when editing a frame.
+            for field in ("name", "address", "package", "component", "wake", "sleep", "morning_action",
+                          "day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
+                values[field] = request.form.get(field, "").strip()
+            parsed = dict(values)
+            for field in ("day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
+                try:
+                    parsed[field] = int(values[field])
+                except ValueError:
+                    error, code = f"{field} must be a whole number.", 400
+                    break
+            if error is None:
+                error, code = save_configuration(name, parsed, revision)
+            if error is None:
+                flash(f"Settings saved for {parsed['name']}.", "success")
+                return redirect(url_for("index"), code=303)
+        return render_template("frame_form.html", frame=values, name=name, revision=revision,
+                               timezone=config["timezone"], error=error), code
+
+    @app.route("/frames/<name>/remove", methods=["GET", "POST"])
+    def remove_frame(name):
+        values, revision = configuration(name)
+        error, code = None, 200
+        if request.method == "POST":
+            revision = request.form.get("revision", "")
+            error, code = save_configuration(name, None, revision)
+            if error is None:
+                flash(f"{name} removed. The controller will no longer send commands to this frame.", "success")
+                return redirect(url_for("index"), code=303)
+        return render_template("frame_remove.html", frame=values, revision=revision, error=error), code
 
     return app
 

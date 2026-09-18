@@ -5,7 +5,7 @@
   <p class="intro">A fresh start for a slideshow that needs one.</p></div>
   <div class="summary"><strong>{{ frames|length }}</strong> configured frames<span>{{ timezone }}</span></div>
 </section>
-<div class="toolbar"><span class="schedule"><i class="dot {% if not scheduled %}off{% endif %}"></i> Schedule {{ 'enabled' if scheduled else 'paused' }}</span><span id="refresh-status">Updates every 10 seconds</span></div>
+<div class="toolbar"><span class="schedule"><i class="dot {% if not scheduled %}off{% endif %}"></i> Schedule {{ 'enabled' if scheduled else 'paused' }}</span><span id="refresh-status">Updates every 10 seconds</span><a class="button primary" href="{{ url_for('edit_frame') }}">Add frame</a></div>
 {% for category, message in get_flashed_messages(with_categories=true) %}
 <p class="notice {{ category }}" role="status">{{ message }}</p>
 {% endfor %}
@@ -29,7 +29,13 @@
       <input type="hidden" name="request_id" value="{{ request_token() }}">
       <button class="reboot" type="submit" {% if frame.busy %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy else 'Reboot frame' }}</button>
     </form>
+    <nav class="frame-actions" aria-label="Manage {{ frame.name }}">
+      <a class="button quiet" href="{{ url_for('edit_frame', name=frame.name) }}">Edit settings</a>
+      <a class="button quiet danger-text" href="{{ url_for('remove_frame', name=frame.name) }}">Remove</a>
+    </nav>
   </article>
+{% else %}
+  <article class="frame-card empty-state"><h2>No frames yet.</h2><p class="muted">Add a frame to configure its schedule and control it here.</p><a class="button primary" href="{{ url_for('edit_frame') }}">Add your first frame</a></article>
 {% endfor %}
 </div>
 <p class="footnote">Results show controller actions; they do not confirm that photos are advancing. Reboots during scheduled sleep hours stop the app and set brightness to zero.</p>

@@ -1,11 +1,13 @@
 """Scheduled LAN ADB frame controller with optional authenticated web control."""
 import argparse
+from copy import deepcopy
 import fcntl
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import signal
 import subprocess
@@ -61,6 +63,13 @@ def window(now, frame):
 
 def load_config():
     config = json.loads(Path(CONFIG).read_text())
+    # The read-only deployment config seeds the UI until its first saved change.
+    config["frames"] = read_json(DATA / "frames.json", config.get("frames", []))
+    return validate_config(config)
+
+
+def validate_config(config):
+    config = deepcopy(config)
     ZoneInfo(config["timezone"])
     if type(config.get("enabled", False)) is not bool:
         raise ValueError("enabled must be a boolean")
@@ -70,10 +79,15 @@ def load_config():
     if type(config["web"].get("secure_cookie", False)) is not bool:
         raise ValueError("web.secure_cookie must be a boolean")
     frames = config["frames"]
-    if not isinstance(frames, list) or not frames or len(frames) > 50:
-        raise ValueError("Configure 1 to 50 frames")
+    if not isinstance(frames, list) or len(frames) > 50:
+        raise ValueError("Configure 0 to 50 frames")
     ids, addresses = set(), set()
     for frame in frames:
+        if not isinstance(frame, dict):
+            raise ValueError("Each frame must be an object")
+        for field in ("name", "address", "package", "component", "wake", "sleep"):
+            if not isinstance(frame.get(field), str) or not frame[field]:
+                raise ValueError(f"{field} is required and must be text")
         name = frame["name"]
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name in ids:
             raise ValueError("Frame names must be unique letters/numbers/underscore/dash")
@@ -135,18 +149,20 @@ class ADB:
 
 
 class Frame:
-    def __init__(self, config, timezone, scheduled=True):
+    def __init__(self, config, timezone, scheduled=True, data=None):
         self.cfg = config
         self.zone = ZoneInfo(timezone)
         self.adb = ADB(config["address"])
-        self.path = DATA / (config["name"] + ".state.json")
-        self.status_path = DATA / (config["name"] + ".status.json")
+        data = DATA if data is None else data
+        self.path = data / (config["name"] + ".state.json")
+        self.status_path = data / (config["name"] + ".status.json")
         self.state = read_json(self.path, {})
         self.last_night = 0
         self.last_mode = None
         self.scheduled = scheduled
         self.mutex = threading.Lock()
         self.wakeup = threading.Event()
+        self.stopped = threading.Event()
 
     def save(self):
         atomic_json(self.path, self.state)
@@ -323,19 +339,133 @@ class Frame:
                 "busy": job.get("phase") in ("queued", "rebooting", "starting")}
 
     def work(self):
-        while not STOP.is_set():
+        while not STOP.is_set() and not self.stopped.is_set():
             self.wakeup.clear()
-            try:
-                with self.mutex:
-                    self.tick()
-            except Exception as exc:
-                LOG.warning("%s: %s", self.cfg["name"], exc)
+            with self.mutex:
+                if self.stopped.is_set():
+                    return
                 try:
-                    self.status("error", error=str(exc))
-                except OSError:
-                    LOG.exception("Cannot write frame status")
+                    self.tick()
+                except Exception as exc:
+                    LOG.warning("%s: %s", self.cfg["name"], exc)
+                    try:
+                        self.status("error", error=str(exc))
+                    except OSError:
+                        LOG.exception("Cannot write frame status")
             self.wakeup.wait(5 if self.state.get("manual", {}).get("phase") in
                              ("queued", "rebooting", "starting") else 30)
+
+
+class FrameRegistry:
+    """Serialize configuration changes and coordinate live frame workers."""
+
+    def __init__(self, config, data, frames=None):
+        self.config = config
+        self.data = data
+        self.lock = threading.RLock()
+        self.revision = secrets.token_hex(16)
+        self.frames = {frame.cfg["name"]: frame for frame in (
+            frames if frames is not None else
+            [Frame(cfg, config["timezone"], config.get("enabled", False), data)
+             for cfg in config["frames"]])}
+        self.workers = {}
+        self.running = False
+
+    def snapshots(self):
+        with self.lock:
+            return [frame.snapshot() for frame in self.frames.values()]
+
+    def configuration(self, name=None):
+        with self.lock:
+            return (deepcopy(self.frames[name].cfg) if name is not None else {}, self.revision)
+
+    def request_reboot(self, name, token):
+        with self.lock:
+            self.frames[name].request_reboot(token)
+
+    def _start(self, frame):
+        def run():
+            # A newly added worker must not send commands before its config is saved.
+            with self.lock:
+                active = not frame.stopped.is_set()
+            if active:
+                frame.work()
+        worker = threading.Thread(target=run, name=frame.cfg["name"], daemon=True)
+        worker.start()
+        return worker
+
+    def start(self):
+        with self.lock:
+            self.running = True
+            for frame in self.frames.values():
+                self.workers[frame.cfg["name"]] = self._start(frame)
+
+    def healthy(self):
+        with self.lock:
+            return all(worker.is_alive() for worker in self.workers.values())
+
+    def change(self, name, values, revision):
+        """Add (name=None), remove (values=None), or edit; persist before applying."""
+        with self.lock:
+            if revision != self.revision:
+                raise RuntimeError("Frame settings changed in another session. Reload this page and try again.")
+            frame = self.frames[name] if name is not None else None
+            candidates = [values if key == name else existing.cfg
+                          for key, existing in self.frames.items()
+                          if key != name or values is not None]
+            if name is None:
+                candidates.append(values)
+            validated = validate_config({**self.config, "frames": candidates})["frames"]
+            cfg = next((cfg for cfg in validated if values is not None and cfg["name"] == values["name"]), None)
+            if frame is not None and not frame.mutex.acquire(blocking=False):
+                raise RuntimeError("Frame is busy. Try again shortly.")
+            added = None
+            try:
+                if frame is not None and frame.state.get("manual", {}).get("phase") in ("queued", "rebooting", "starting"):
+                    raise RuntimeError("Wait for the reboot to finish before editing or removing this frame.")
+                if frame is None:
+                    added = Frame(cfg, self.config["timezone"], self.config.get("enabled", False), self.data)
+                    worker = self._start(added) if self.running else None
+                elif cfg is not None and cfg["name"] != name:
+                    # Copy the journal first, so a crash cannot lose reboot history.
+                    # Retain old files, also when removing a frame, for recovery.
+                    atomic_json(self.data / (cfg["name"] + ".state.json"), frame.state)
+                    atomic_json(self.data / (cfg["name"] + ".status.json"),
+                                read_json(frame.status_path, {}))
+                atomic_json(self.data / "frames.json", validated)
+                if added is not None:
+                    self.frames[cfg["name"]] = added
+                    if worker is not None:
+                        self.workers[cfg["name"]] = worker
+                elif cfg is None:
+                    frame.stopped.set()
+                    frame.wakeup.set()
+                    del self.frames[name]
+                    self.workers.pop(name, None)
+                else:
+                    frame.cfg = cfg
+                    frame.adb = ADB(cfg["address"])
+                    frame.path = self.data / (cfg["name"] + ".state.json")
+                    frame.status_path = self.data / (cfg["name"] + ".status.json")
+                    frame.last_mode = None
+                    frame.last_night = 0
+                    frame.wakeup.set()
+                    self.frames = {cfg["name"] if key == name else key: existing
+                                   for key, existing in self.frames.items()}
+                    if name in self.workers:
+                        worker = self.workers.pop(name)
+                        worker.name = cfg["name"]
+                        self.workers[cfg["name"]] = worker
+                self.config["frames"] = validated
+                self.revision = secrets.token_hex(16)
+            except Exception:
+                if added is not None:
+                    added.stopped.set()
+                    added.wakeup.set()
+                raise
+            finally:
+                if frame is not None:
+                    frame.mutex.release()
 
 
 def health():
@@ -349,10 +479,11 @@ def main():
     command = parser.parse_args().command
     if command == "health":
         return health()
-    if command == "status":
-        print(json.dumps([read_json(p, {}) for p in sorted(DATA.glob("*.status.json"))], indent=2))
-        return 0
     config = load_config()
+    if command == "status":
+        print(json.dumps([read_json(DATA / (cfg["name"] + ".status.json"), {})
+                          for cfg in config["frames"]], indent=2))
+        return 0
     if command == "validate":
         print(f"Valid: {len(config['frames'])} frames; enabled={config.get('enabled', False)}")
         return 0
@@ -364,25 +495,21 @@ def main():
     workers = []
     # Load all state before any device receives commands. Manual control also
     # works with scheduling disabled; existing configuration stays compatible.
-    frames = [Frame(frame, config["timezone"], config.get("enabled", False))
-              for frame in config["frames"]]
+    registry = FrameRegistry(config, DATA)
+    registry.start()
     if config["web"].get("enabled", False):
         from webui import create_app
         from waitress import create_server
-        server = create_server(create_app(config, frames, DATA), host="0.0.0.0", port=8080,
+        server = create_server(create_app(config, registry, DATA), host="0.0.0.0", port=8080,
                                threads=4, max_request_body_size=8192, connection_limit=32)
         worker = threading.Thread(target=server.run, name="web", daemon=True)
         worker.start()
         workers.append(worker)
         LOG.info("Web interface listening on port 8080")
-    for frame in frames:
-        worker = threading.Thread(target=frame.work, name=frame.cfg["name"], daemon=True)
-        worker.start()
-        workers.append(worker)
     if not config.get("enabled", False):
         LOG.warning("Scheduling disabled. Authorize ADB and test frames, then enable config and restart.")
     while not STOP.is_set():
-        if any(not worker.is_alive() for worker in workers):
+        if not registry.healthy() or any(not worker.is_alive() for worker in workers):
             raise RuntimeError("A frame worker exited unexpectedly")
         (DATA / "heartbeat").touch()
         STOP.wait(15)
