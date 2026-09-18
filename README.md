@@ -8,51 +8,6 @@ or changes to those containers are required.
 This is generated source code, not a published container image. The local logic
 tests use mocked ADB; actual Frameo firmware behavior must be tested on your devices.
 
-## Upgrade from v1.0.0: add the web interface
-
-1. Extract this updated project into a source directory. Keep your existing
-   `config` and `data` directories, including the ADB keys and state files.
-2. Build the updated image on TrueNAS from this directory:
-
-   ```bash
-   docker build -t frame-controller:1.1.0 .
-   ```
-
-3. Add this top-level property to your existing `config/config.json` (preserve
-   your existing `enabled`, timezone, and frames):
-
-   ```json
-   "web": { "enabled": true, "secure_cookie": false }
-   ```
-
-4. Edit your existing TrueNAS app YAML. Change the image to
-   `frame-controller:1.1.0` and add a port mapping under the service:
-
-   ```yaml
-   ports:
-     - "YOUR_TRUENAS_LAN_IP:8080:8080"
-   ```
-
-   Replace `YOUR_TRUENAS_LAN_IP` with the TrueNAS LAN address reachable by your
-   browser (not a frame's IP). If host port 8080 is occupied, use e.g.
-   `"YOUR_TRUENAS_LAN_IP:8088:8080"` and browse port 8088 instead. Keep existing
-   volume mappings and UID/GID settings. Apply the update/redeploy the app.
-5. In the running container shell in TrueNAS, set your account:
-
-   ```bash
-   python /app/webui.py set-password --username admin
-   ```
-
-   Enter a password at the hidden prompts. At least eight characters are required.
-   There is no default password. If using Compose CLI instead, run
-   `docker compose exec frame-controller python /app/webui.py set-password`.
-6. Open `http://YOUR_TRUENAS_LAN_IP:8080`, sign in, and choose **Reboot frame**.
-   Confirm the selected frame in the dialog. Its progress updates automatically.
-
-The web UI can run with scheduling disabled (`enabled: false` at the top level).
-Manual control still works. Existing v1.0 configuration remains valid and leaves
-web access disabled until you add `web.enabled: true`.
-
 ### Web behavior and local login
 
 - Lists only frames in your config, with address, wake/sleep times, recent

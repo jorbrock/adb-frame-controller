@@ -26,7 +26,8 @@
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
-        "ms-python.debugpy"
+        "ms-python.debugpy",
+        "openai.chatgpt"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
