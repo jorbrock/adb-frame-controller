@@ -3,7 +3,7 @@
 #   - /mnt/BrockNetPoolSSD/AppConfigs/AdbFrameController/docker-compose.yaml
 services:
   frame-controller:
-    image: frame-controller:1.3.0
+    image: frame-controller:1.4.0
     pull_policy: never
     restart: unless-stopped
     init: true
