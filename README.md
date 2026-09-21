@@ -351,7 +351,10 @@ Logs record night-mode commands, reboot requests, confirmed launches, and errors
 Status shows each frame's latest result and timestamp. In the web UI, select
 **View full log** below a frame's latest result to browse its recorded results,
 timestamps, and errors, newest first (50 per page). **Refresh latest** loads new
-activity without interrupting you while you read older entries. Logs require sign-in.
+activity without interrupting you while you read older entries. The compact table
+scrolls horizontally on narrow screens. **Clear log** opens a confirmation page
+to permanently remove that frame's history while preserving its latest status and
+settings; new events continue to be recorded. Logs require sign-in.
 History is persisted in `/data/<frame-name>.log.jsonl` and follows UI frame renames.
 Recording starts with this feature and preserves the previously saved latest result;
 earlier results cannot be recovered. Log files are retained without automatic rotation,

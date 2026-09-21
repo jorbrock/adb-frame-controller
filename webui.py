@@ -119,6 +119,24 @@ def create_app(config, registry, data):
         return render_template("frame_log.html", frame=frame, entries=entries,
                                page=page, has_older=has_older)
 
+    @app.route("/frames/<name>/log/clear", methods=["GET", "POST"])
+    def clear_frame_log(name):
+        frame, _ = configuration(name)
+        if request.method == "POST":
+            try:
+                registry.clear_log(name)
+            except KeyError:
+                abort(404)
+            except RuntimeError as exc:
+                flash(str(exc), "error")
+            except OSError:
+                app.logger.exception("Cannot clear frame log")
+                flash("Could not clear the log. Check the data directory and try again.", "error")
+            else:
+                flash(f"Log cleared for {name}.", "success")
+            return redirect(url_for("frame_log", name=name), code=303)
+        return render_template("frame_log_clear.html", frame=frame)
+
     @app.post("/logout")
     def logout():
         session.clear()

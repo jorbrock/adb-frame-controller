@@ -8,21 +8,31 @@
 <nav class="toolbar" aria-label="Log navigation">
   <a class="button quiet" href="{{ url_for('index') }}">Back to frames</a>
   <a class="button quiet" href="{{ url_for('frame_log', name=frame.name) }}">Refresh latest</a>
+  <a class="button quiet danger-text" href="{{ url_for('clear_frame_log', name=frame.name) }}">Clear log</a>
   <span>Page {{ page }}</span>
 </nav>
-<div class="log-entries">
-{% for entry in entries %}
-  <article class="job {{ 'job-error' if entry.get('error') else '' }}">
-    {% if entry.get('updated_at') %}<time datetime="{{ entry.updated_at }}">{{ entry.updated_at }}</time>{% endif %}
-    <p><strong>{{ entry.get('result', 'Unknown result')|replace('_', ' ')|capitalize }}</strong></p>
-    {% if entry.get('error') %}<pre>{{ entry.error }}</pre>{% endif %}
-    {% if entry.get('mode') %}<p>Mode: {{ entry.mode }}</p>{% endif %}
-    <p>{{ entry.get('frame', frame.name) }} · {{ entry.get('address', frame.address) }}</p>
-  </article>
-{% else %}
-  <p class="notice">{{ 'No activity recorded yet.' if page == 1 else 'No older results.' }}</p>
+{% for category, message in get_flashed_messages(with_categories=true) %}
+<p class="notice {{ category }}" role="status">{{ message }}</p>
 {% endfor %}
+{% if entries %}
+<div class="log-table-scroll" role="region" aria-label="Controller log entries" tabindex="0">
+<table class="log-table">
+  <thead><tr><th scope="col">Time</th><th scope="col">Result</th><th scope="col">Mode</th><th scope="col">Details</th></tr></thead>
+  <tbody>
+  {% for entry in entries %}
+    <tr>
+      <td>{% if entry.get('updated_at') %}<time datetime="{{ entry.updated_at }}">{{ entry.updated_at }}</time>{% else %}—{% endif %}</td>
+      <td>{{ entry.get('result', 'Unknown result')|replace('_', ' ')|capitalize }}</td>
+      <td>{{ entry.get('mode', '—') }}</td>
+      <td>{% if entry.get('error') %}<div class="log-error">{{ entry.error }}</div>{% endif %}<span class="muted">{{ entry.get('frame', frame.name) }} · {{ entry.get('address', frame.address) }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 </div>
+{% else %}
+<p class="notice">{{ 'No activity recorded yet.' if page == 1 else 'No older results.' }}</p>
+{% endif %}
 <nav class="toolbar" aria-label="Log pages">
   {% if page > 1 %}<a class="button quiet" href="{{ url_for('frame_log', name=frame.name, page=page-1) }}">Newer results</a>{% endif %}
   {% if has_older %}<a class="button quiet" href="{{ url_for('frame_log', name=frame.name, page=page+1) }}">Older results</a>{% endif %}

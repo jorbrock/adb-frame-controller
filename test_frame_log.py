@@ -102,6 +102,55 @@ class FrameLogTests(unittest.TestCase):
         self.assertNotIn(b'Older results', older.data)
         self.assertIn(b'View full log', self.client.get('/').data)
 
+    def test_clear_requires_auth_csrf_and_confirmation(self):
+        path = '/frames/living-room/log/clear'
+        self.frame.status('first')
+        self.assertEqual(self.client.post(path).status_code, 302)
+        self.login()
+        response = self.client.get(path)
+        self.assertIn(b'This permanently removes', response.data)
+        self.assertEqual(len(list(frame_log.entries(self.frame.log_path))), 1)
+        self.assertEqual(self.client.post(path).status_code, 400)
+        with self.client.session_transaction() as session:
+            csrf = session['csrf']
+        self.assertEqual(self.client.post('/frames/unknown/log/clear',
+                                         data=dict(csrf=csrf)).status_code, 404)
+        response = self.client.post(path, data=dict(csrf=csrf), follow_redirects=True)
+        self.assertIn(b'Log cleared for living-room', response.data)
+        self.assertIn(b'No activity recorded yet.', response.data)
+
+    def test_clear_preserves_status_other_frames_and_stays_empty_after_restart(self):
+        self.frame.status('manual_wake_active', mode='day')
+        other = c.Frame({**self.frame.cfg, 'name': 'other'}, 'UTC', data=self.data)
+        other.status('other_result')
+        status = self.frame.status_path.read_bytes()
+        self.registry.clear_log('living-room')
+        self.assertEqual(self.frame.status_path.read_bytes(), status)
+        self.assertEqual(len(list(frame_log.entries(other.log_path))), 1)
+        restored = c.FrameRegistry(self.config, self.data)
+        self.assertEqual(restored.log_page('living-room', 1)[1], [])
+        frame = restored.frames['living-room']
+        frame.status('manual_wake_active', mode='day')
+        self.assertEqual(restored.log_page('living-room', 1)[1], [])
+        frame.status('manual_sleep_completed')
+        self.assertEqual([r['result'] for r in restored.log_page('living-room', 1)[1]],
+                         ['manual_sleep_completed'])
+
+    def test_clear_busy_or_storage_failure_keeps_history(self):
+        self.frame.status('first')
+        self.frame.mutex.acquire()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'busy'):
+                self.registry.clear_log('living-room')
+        finally:
+            self.frame.mutex.release()
+        with patch.object(frame_log.os, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.registry.clear_log('living-room')
+        self.assertEqual(len(list(frame_log.entries(self.frame.log_path))), 1)
+        self.assertTrue(self.frame.mutex.acquire(blocking=False))
+        self.frame.mutex.release()
+
     def test_large_unicode_records_and_partial_tail(self):
         self.frame.status('first', error='é' * 10000)
         self.frame.status('second')

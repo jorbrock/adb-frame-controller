@@ -23,6 +23,16 @@ def append(path, entry, previous=None):
         os.fsync(stream.fileno())
 
 
+def clear(path):
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        # A blank line marks intentionally cleared history, preventing legacy seeding.
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
 def copy(source, destination):
     temporary = destination.with_suffix(".tmp")
     if source.exists():

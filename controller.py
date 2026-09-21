@@ -506,10 +506,21 @@ class FrameRegistry:
         with self.lock:
             frame = self.frames[name]
             records, has_older = frame_log.page(frame.log_path, page)
-            if not records and page == 1:
+            if not records and page == 1 and (
+                    not frame.log_path.exists() or frame.log_path.stat().st_size == 0):
                 latest = read_json(frame.status_path, {})
                 records = [latest] if latest else []
             return deepcopy(frame.cfg), records, has_older
+
+    def clear_log(self, name):
+        with self.lock:
+            frame = self.frames[name]
+            if not frame.mutex.acquire(blocking=False):
+                raise RuntimeError("Frame is busy. Try again shortly.")
+            try:
+                frame_log.clear(frame.log_path)
+            finally:
+                frame.mutex.release()
 
     def request_reboot(self, name, token):
         with self.lock:
