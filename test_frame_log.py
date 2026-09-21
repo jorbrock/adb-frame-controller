@@ -1,5 +1,7 @@
 """Persistent frame history and its authenticated UI."""
 import json
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,6 +46,38 @@ class FrameLogTests(unittest.TestCase):
         self.frame.status('first')
         self.frame.status('second')
         self.assertEqual([r['result'] for r in frame_log.entries(self.frame.log_path)], ['second', 'first', 'legacy'])
+
+    def test_manual_wake_logs_transitions_but_refreshes_status_across_restart(self):
+        start = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        with patch.object(c, 'datetime') as clock:
+            clock.now.return_value = start
+            self.frame.status('manual_wake_active', mode='day')
+            clock.now.return_value = start + timedelta(seconds=30)
+            self.frame.status('manual_wake_active', mode='day')
+            restored = c.FrameRegistry(self.config, self.data).frames['living-room']
+            clock.now.return_value = start + timedelta(seconds=60)
+            restored.status('manual_wake_active', mode='day')
+        records = list(frame_log.entries(self.frame.log_path))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['updated_at'], start.isoformat())
+        self.assertEqual(c.read_json(self.frame.status_path, {})['updated_at'],
+                         (start + timedelta(seconds=60)).isoformat())
+        restored.status('manual_sleep_completed')
+        restored.status('manual_wake_active', mode='day')
+        restored.status('manual_wake_active', mode='day')
+        self.assertEqual([r['result'] for r in frame_log.entries(self.frame.log_path)],
+                         ['manual_wake_active', 'manual_sleep_completed', 'manual_wake_active'])
+
+    def test_repeated_device_actions_are_still_logged(self):
+        self.frame.status('night_commands_sent', mode='night')
+        self.frame.status('night_commands_sent', mode='night')
+        self.assertEqual(len(list(frame_log.entries(self.frame.log_path))), 2)
+
+    def test_manual_wake_detail_changes_are_logged(self):
+        self.frame.status('manual_wake_active', mode='day')
+        self.frame.cfg['address'] = '192.0.2.9:5555'
+        self.frame.status('manual_wake_active', mode='day')
+        self.assertEqual(len(list(frame_log.entries(self.frame.log_path))), 2)
 
     def test_ui_auth_empty_unknown_pagination_and_escaping(self):
         path = '/frames/living-room/log'
