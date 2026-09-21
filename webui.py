@@ -162,6 +162,22 @@ def create_app(config, registry, data):
             flash(f"{action.capitalize()} requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
 
+    @app.post("/frames/actions/wake", defaults={"action": "wake"})
+    @app.post("/frames/actions/sleep", defaults={"action": "sleep"})
+    def display_all(action):
+        token = request.form.get("request_id", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            abort(400, "Invalid request ID")
+        accepted, errors = registry.request_all(action, token)
+        if accepted:
+            flash(f"{action.capitalize()} requested for {len(accepted)} frame(s): "
+                  + ", ".join(accepted) + ". Progress will appear below.", "success")
+        for name, error in errors.items():
+            flash(f"{name}: {error}", "error")
+        if not accepted and not errors:
+            flash("No frames configured. Add a frame first.", "error")
+        return redirect(url_for("index"), code=303)
+
     def configuration(name):
         try:
             return registry.configuration(name)

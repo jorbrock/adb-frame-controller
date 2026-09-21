@@ -511,6 +511,23 @@ class FrameRegistry:
         with self.lock:
             self.frames[name].request_action(action, token)
 
+    def request_all(self, action, token):
+        if action not in ("wake", "sleep"):
+            raise ValueError("Invalid global display action")
+        accepted, errors = [], {}
+        with self.lock:
+            for name, frame in self.frames.items():
+                try:
+                    frame.request_action(action, token)
+                except RuntimeError as exc:
+                    errors[name] = str(exc)
+                except OSError:
+                    LOG.exception("Cannot save manual %s request for %s", action, name)
+                    errors[name] = "Could not save the request. Check the data directory and try again."
+                else:
+                    accepted.append(name)
+        return accepted, errors
+
     def _start(self, frame):
         def run():
             # A newly added worker must not send commands before its config is saved.

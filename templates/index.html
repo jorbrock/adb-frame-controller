@@ -6,6 +6,15 @@
   <div class="summary"><strong>{{ frames|length }}</strong> configured frames<span>{{ timezone }}</span></div>
 </section>
 <div class="toolbar"><span class="schedule"><i class="dot {% if not scheduled %}off{% endif %}"></i> Schedule {{ 'enabled' if scheduled else 'paused' }}</span><span id="refresh-status">Updates every 10 seconds</span><a class="button primary" href="{{ url_for('edit_frame') }}">Add frame</a></div>
+<div class="global-actions" role="group" aria-label="Control all frames">
+  {% for action, label in [('wake', 'Wake all frames'), ('sleep', 'Sleep all frames')] %}
+  <form class="display-form" method="post" action="{{ url_for('display_all', action=action) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="request_id" value="{{ request_token() }}">
+    <button class="{{ 'primary' if action == 'wake' else 'quiet' }}" type="submit" {% if not frames %}disabled{% endif %}>{{ label }}</button>
+  </form>
+  {% endfor %}
+</div>
 {% for category, message in get_flashed_messages(with_categories=true) %}
 <p class="notice {{ category }}" role="status">{{ message }}</p>
 {% endfor %}

@@ -374,7 +374,10 @@ controller can finish startup. Do not delete state to fix connection failures.
 
 To reboot a frame from your browser, sign in and use its Reboot frame button.
 Use **Wake frame** to launch the app and restore brightness without rebooting,
-or **Sleep frame** to stop the app and dim the display. Manual wake pauses night
+or **Sleep frame** to stop the app and dim the display. Use **Wake all frames** or
+**Sleep all frames** above the frame cards to request the same action for every
+configured frame. Busy frames are skipped and any errors are shown by frame; other
+frames still receive the request. Global actions follow the same override rules. Manual wake pauses night
 rechecks until the next scheduled sleep time or a manual sleep request.
 
 Use DHCP reservations. On UniFi, permit the TrueNAS container's effective source
