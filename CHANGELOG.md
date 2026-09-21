@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.0
+
+- Add a View full log link for each frame in the authenticated web UI.
+- Show timestamped controller results and errors, newest first, with pagination.
+- Persist result history across restarts and frame renames.
+- Preserve the previously saved latest result when recording begins; earlier
+  results are unavailable because they were not stored.
+
+### Upgrade
+
+Build the `frame-controller:1.3.0` image and recreate the service using the updated
+Compose file. Preserve the data volume to retain settings and history. Frame logs
+are stored in `/data/<frame-name>.log.jsonl` without automatic rotation.
+
 ## v1.2.0
 
 - Add per-frame Wake and Sleep buttons to the authenticated web UI.
