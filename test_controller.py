@@ -60,7 +60,7 @@ class RecoveryTests(unittest.TestCase):
     def test_reboot_then_launch_once(self):
         frame = self.frame()
         frame.tick()
-        frame.adb.run.assert_called_once_with("reboot")
+        frame.adb.run.assert_called_once_with("reboot", timeout=60)
         frame.adb.boot_id.return_value = "new-boot"
         frame.adb.shell.side_effect = lambda *args: "Status: ok" if args[:2] == ("am", "start") else "1"
         frame.tick()
@@ -77,7 +77,7 @@ class RecoveryTests(unittest.TestCase):
         for _ in range(2):
             with self.assertRaisesRegex(RuntimeError, "launch not confirmed"):
                 frame.tick()
-        frame.adb.run.assert_called_once_with("reboot")
+        frame.adb.run.assert_called_once_with("reboot", timeout=60)
         self.assertNotIn("completed_window", frame.state)
 
     def test_night_attempts_dimming_even_if_stop_fails(self):

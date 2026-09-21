@@ -188,7 +188,7 @@ class DisplayTests(unittest.TestCase):
                 frame.adb.boot_id.return_value = "new-boot"
                 frame.tick()
                 self.assertEqual(frame.state["manual"]["phase"], "completed")
-                frame.adb.run.assert_called_once_with("reboot")
+                frame.adb.run.assert_called_once_with("reboot", timeout=60)
                 if action == "wake":
                     frame.launch.assert_called_once()
                     frame.night.assert_not_called()

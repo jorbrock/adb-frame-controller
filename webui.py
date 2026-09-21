@@ -101,6 +101,24 @@ def create_app(config, registry, data):
         return render_template("index.html", frames=registry.snapshots(),
                                timezone=config["timezone"], scheduled=config.get("enabled", False))
 
+    @app.get("/frames/<name>/log")
+    def frame_log(name):
+        try:
+            page = int(request.args.get("page", "1"))
+        except ValueError:
+            abort(400, "Invalid log page")
+        if page < 1 or page > 1000000:
+            abort(400, "Invalid log page")
+        try:
+            frame, entries, has_older = registry.log_page(name, page)
+        except KeyError:
+            abort(404)
+        except OSError:
+            app.logger.exception("Cannot read frame log")
+            return "Could not read the frame log. Try again shortly.", 503
+        return render_template("frame_log.html", frame=frame, entries=entries,
+                               page=page, has_older=has_older)
+
     @app.post("/logout")
     def logout():
         session.clear()

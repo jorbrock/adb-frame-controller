@@ -2,6 +2,7 @@
 import argparse
 from copy import deepcopy
 import fcntl
+import frame_log
 import json
 import logging
 import os
@@ -186,6 +187,7 @@ class Frame:
         data = DATA if data is None else data
         self.path = data / (config["name"] + ".state.json")
         self.status_path = data / (config["name"] + ".status.json")
+        self.log_path = data / (config["name"] + ".log.jsonl")
         self.state = read_json(self.path, {})
         self.last_night = 0
         self.last_mode = None
@@ -198,11 +200,17 @@ class Frame:
         atomic_json(self.path, self.state)
 
     def status(self, result, **extra):
-        atomic_json(self.status_path, {
+        entry = {
             "frame": self.cfg["name"], "address": self.cfg["address"],
             "updated_at": datetime.now(self.zone).isoformat(),
             "result": result, **extra,
-        })
+        }
+        previous = read_json(self.status_path, {})
+        atomic_json(self.status_path, entry)
+        try:
+            frame_log.append(self.log_path, entry, previous)
+        except OSError:
+            LOG.exception("Cannot append controller log for %s", self.cfg["name"])
 
     def active_override(self, now, state=None):
         override = (self.state if state is None else state).get("override", {})
@@ -255,7 +263,7 @@ class Frame:
                 self.state.pop("ready_at", None)
                 self.save()
                 self.status("reboot_requested", mode=mode)
-                self.adb.run("reboot")
+                self.adb.run("reboot", timeout=60)
                 LOG.info("%s: morning reboot requested", self.cfg["name"])
                 return
             if boot_id == self.state["previous_boot_id"]:
@@ -395,7 +403,7 @@ class Frame:
                     # Manual reboot fulfills today's reboot attempt too.
                     self.state.update(attempted_window=token, previous_boot_id=boot_id)
                 self.save()  # Journal before sending, just like the scheduled path.
-                self.adb.run("reboot")
+                self.adb.run("reboot", timeout=60)
                 return True
             if boot_id == job["previous_boot_id"]:
                 raise RuntimeError("Waiting for the frame to reboot; no duplicate reboot will be sent")
@@ -486,6 +494,15 @@ class FrameRegistry:
         with self.lock:
             return (deepcopy(self.frames[name].cfg) if name is not None else {}, self.revision)
 
+    def log_page(self, name, page):
+        with self.lock:
+            frame = self.frames[name]
+            records, has_older = frame_log.page(frame.log_path, page)
+            if not records and page == 1:
+                latest = read_json(frame.status_path, {})
+                records = [latest] if latest else []
+            return deepcopy(frame.cfg), records, has_older
+
     def request_reboot(self, name, token):
         with self.lock:
             self.frames[name].request_reboot(token)
@@ -538,6 +555,7 @@ class FrameRegistry:
                     added = Frame(cfg, self.config["timezone"], self.config.get("enabled", False), self.data)
                     worker = self._start(added) if self.running else None
                 elif cfg is not None and cfg["name"] != name:
+                    frame_log.copy(frame.log_path, self.data / (cfg["name"] + ".log.jsonl"))
                     # Copy the journal first, so a crash cannot lose reboot history.
                     # Retain old files, also when removing a frame, for recovery.
                     atomic_json(self.data / (cfg["name"] + ".state.json"), frame.state)
@@ -558,6 +576,7 @@ class FrameRegistry:
                     frame.adb = ADB(cfg["address"])
                     frame.path = self.data / (cfg["name"] + ".state.json")
                     frame.status_path = self.data / (cfg["name"] + ".status.json")
+                    frame.log_path = self.data / (cfg["name"] + ".log.jsonl")
                     frame.last_mode = None
                     frame.last_night = 0
                     frame.wakeup.set()

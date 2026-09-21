@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}{{ frame.name }} log · Frame Controller{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">CONTROLLER LOG</p><h1>{{ frame.name }}</h1>
+  <p class="intro">All recorded controller results, newest first.</p></div>
+</section>
+<nav class="toolbar" aria-label="Log navigation">
+  <a class="button quiet" href="{{ url_for('index') }}">Back to frames</a>
+  <a class="button quiet" href="{{ url_for('frame_log', name=frame.name) }}">Refresh latest</a>
+  <span>Page {{ page }}</span>
+</nav>
+<div class="log-entries">
+{% for entry in entries %}
+  <article class="job {{ 'job-error' if entry.get('error') else '' }}">
+    {% if entry.get('updated_at') %}<time datetime="{{ entry.updated_at }}">{{ entry.updated_at }}</time>{% endif %}
+    <p><strong>{{ entry.get('result', 'Unknown result')|replace('_', ' ')|capitalize }}</strong></p>
+    {% if entry.get('error') %}<pre>{{ entry.error }}</pre>{% endif %}
+    {% if entry.get('mode') %}<p>Mode: {{ entry.mode }}</p>{% endif %}
+    <p>{{ entry.get('frame', frame.name) }} · {{ entry.get('address', frame.address) }}</p>
+  </article>
+{% else %}
+  <p class="notice">{{ 'No activity recorded yet.' if page == 1 else 'No older results.' }}</p>
+{% endfor %}
+</div>
+<nav class="toolbar" aria-label="Log pages">
+  {% if page > 1 %}<a class="button quiet" href="{{ url_for('frame_log', name=frame.name, page=page-1) }}">Newer results</a>{% endif %}
+  {% if has_older %}<a class="button quiet" href="{{ url_for('frame_log', name=frame.name, page=page+1) }}">Older results</a>{% endif %}
+</nav>
+<p class="footnote">History starts when log recording is installed, including the previously saved last result. Earlier results are unavailable. Use Refresh latest to see new activity.</p>
+{% endblock %}

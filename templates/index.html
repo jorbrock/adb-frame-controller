@@ -27,6 +27,7 @@
       <p>{{ frame.status.get('result', 'No activity yet')|replace('_', ' ')|capitalize }}</p>
       {% if frame.status.get('error') %}<p class="error-detail">{{ frame.status.error }}</p>{% endif %}
       {% if frame.status.get('updated_at') %}<time datetime="{{ frame.status.updated_at }}">{{ frame.status.updated_at }}</time>{% endif %}
+      <p><a href="{{ url_for('frame_log', name=frame.name) }}">View full log</a></p>
     </div>
     {% if frame.override %}
     <div class="job override"><strong>{{ 'Manual wake' if frame.override.mode == 'day' else 'Manual sleep' }}</strong>

@@ -348,7 +348,16 @@ adb devices -l
 ```
 
 Logs record night-mode commands, reboot requests, confirmed launches, and errors.
-Status shows each frame's latest result and timestamp. Docker health only confirms
+Status shows each frame's latest result and timestamp. In the web UI, select
+**View full log** below a frame's latest result to browse its recorded results,
+timestamps, and errors, newest first (50 per page). **Refresh latest** loads new
+activity without interrupting you while you read older entries. Logs require sign-in.
+History is persisted in `/data/<frame-name>.log.jsonl` and follows UI frame renames.
+Recording starts with this feature and preserves the previously saved latest result;
+earlier results cannot be recovered. Log files are retained without automatic rotation,
+so their disk usage grows over time. This is controller result history, not Android logcat.
+
+Docker health only confirms
 the scheduler is running; it does not mean every frame is reachable or advancing
 photos. Docker also does not restart a container merely because it is unhealthy.
 Frame errors are retried by the scheduler; process exit uses the restart policy.

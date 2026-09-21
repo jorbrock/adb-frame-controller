@@ -38,7 +38,7 @@ class ManualTests(unittest.TestCase):
         frame.tick()
         self.assertEqual(frame.state["manual"]["phase"], "completed")
         frame.tick()
-        frame.adb.run.assert_called_once_with("reboot")
+        frame.adb.run.assert_called_once_with("reboot", timeout=60)
         frame.adb.shell.assert_any_call("am", "start", "-W", "-n", self.cfg["component"])
         frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "128")
 
