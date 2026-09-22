@@ -461,6 +461,9 @@ without ADB authentication, no prompt appears; successful shell access is the
 check. For paired wireless debugging, run `adb pair IP:PAIRING_PORT` from this
 container first, then connect to the frame's connection port.
 
+If remote ADB stays `unauthorized` and you have authorized USB access plus root
+on the frame, follow [the VM TCP/IP authorization guide](vm_adb_tcpip_authorization.md).
+
 Keep `/data/.android` in the persistent data volume; it holds the controller's ADB
 keys. Do not authorize an unrelated temporary container or a root shell with a
 different home directory and assume the application will share that identity.

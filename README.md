@@ -481,6 +481,8 @@ They do not validate a Docker build or real frame firmware.
 
 ## References
 
+- [Fix unauthorized VM-to-frame TCP/IP ADB using USB](docs/vm_adb_tcpip_authorization.md)
+
 - Android ADB and activity-manager commands: https://developer.android.com/tools/adb
 - Wakeup key semantics: https://developer.android.com/reference/android/view/KeyEvent
 - ImmichFrame Android/Frameo instructions: https://github.com/immichFrame/ImmichFrame/blob/main/docs/docs/getting-started/apps.md
