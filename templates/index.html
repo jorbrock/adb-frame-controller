@@ -23,7 +23,7 @@
   <article class="frame-card">
     <div class="card-top"><span class="frame-icon" aria-hidden="true">▣</span>
       <span class="badge {{ 'busy' if frame.busy else '' }}">
-        {% if frame.busy %}{{ frame.job.get('action', 'reboot')|capitalize }} in progress
+        {% if frame.busy %}{{ frame.job.get('action', 'reboot')|replace('_', ' ')|capitalize }} in progress
         {% elif frame.override %}{{ 'Manual wake' if frame.override.mode == 'day' else 'Manual sleep' }}
         {% elif scheduled and frame.mode == 'night' %}Night schedule
         {% else %}Manual control ready{% endif %}
@@ -44,7 +44,7 @@
     </div>
     {% endif %}
     {% if frame.job %}
-    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Last manual ' if not frame.busy else 'Manual ' }}{{ frame.job.get('action', 'reboot') }} · {{ frame.job.phase|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
+    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Last manual ' if not frame.busy else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
     {% endif %}
     <div class="display-actions">
       {% for action, label in [('wake', 'Wake frame'), ('sleep', 'Sleep frame')] %}
@@ -55,11 +55,18 @@
       </form>
       {% endfor %}
     </div>
+    <div class="display-actions recovery-actions">
+    <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action='reset_app') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="request_id" value="{{ request_token() }}">
+      <button class="quiet" type="submit" title="Stop ImmichFrame, clear device caches, and restart the app" {% if frame.busy %}disabled{% endif %}>{{ 'Resetting…' if frame.busy and frame.job.get('action') == 'reset_app' else 'Reset app' }}</button>
+    </form>
     <form class="reboot-form" method="post" action="{{ url_for('reboot', name=frame.name) }}" data-frame="{{ frame.name }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="request_id" value="{{ request_token() }}">
       <button class="reboot" type="submit" {% if frame.busy %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy and frame.job.get('action', 'reboot') == 'reboot' else 'Reboot frame' }}</button>
     </form>
+    </div>
     <nav class="frame-actions" aria-label="Manage {{ frame.name }}">
       <a class="button quiet" href="{{ url_for('edit_frame', name=frame.name) }}">Edit settings</a>
       <a class="button quiet danger-text" href="{{ url_for('remove_frame', name=frame.name) }}">Remove</a>

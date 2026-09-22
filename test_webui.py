@@ -96,12 +96,12 @@ class WebTests(unittest.TestCase):
         (self.data / "web-auth.json").write_text(json.dumps(self.auth))
         self.assertEqual(self.client.get("/").status_code, 302)
 
-    def test_wake_and_sleep_require_authentication_csrf_and_valid_request_ids(self):
-        for action in ("wake", "sleep"):
+    def test_display_actions_require_authentication_csrf_and_valid_request_ids(self):
+        for action in ("wake", "sleep", "reset_app"):
             self.assertEqual(self.client.post(f"/frames/living-room/{action}").status_code, 302)
         self.frame.request_action.assert_not_called()
         self.login()
-        for action in ("wake", "sleep"):
+        for action in ("wake", "sleep", "reset_app"):
             path = f"/frames/living-room/{action}"
             self.assertEqual(self.client.get(path).status_code, 405)
             self.assertEqual(self.client.post(path, data=dict(csrf="wrong", request_id="a" * 32)).status_code, 400)
@@ -114,9 +114,9 @@ class WebTests(unittest.TestCase):
             self.frame.request_action.assert_called_once_with(action, "a" * 32)
             self.frame.request_action.reset_mock()
 
-    def test_wake_and_sleep_show_busy_and_storage_errors(self):
+    def test_display_actions_show_busy_and_storage_errors(self):
         self.login()
-        for action in ("wake", "sleep"):
+        for action in ("wake", "sleep", "reset_app"):
             self.frame.request_action.side_effect = RuntimeError("A manual action is already in progress")
             response = self.client.post(f"/frames/living-room/{action}",
                 data=dict(csrf=self.token(), request_id="a" * 32), follow_redirects=True)

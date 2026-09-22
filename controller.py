@@ -303,11 +303,14 @@ class Frame:
     def trim_morning_caches(self, token):
         if self.state.get("cache_trimmed_window") == token:
             return
-        self.adb.shell("am", "force-stop", self.cfg["package"])
-        self.adb.shell("pm", "trim-caches", "999999999999999999", timeout=120)
+        self.trim_device_caches()
         self.state["cache_trimmed_window"] = token
         self.save()
         LOG.info("%s: morning cache trim command completed", self.cfg["name"])
+
+    def trim_device_caches(self):
+        self.adb.shell("am", "force-stop", self.cfg["package"])
+        self.adb.shell("pm", "trim-caches", "999999999999999999", timeout=120)
 
     def night(self):
         # Attempt every action even if an earlier command fails.
@@ -336,7 +339,7 @@ class Frame:
         self.request_action("reboot", request_id)
 
     def request_action(self, action, request_id):
-        if action not in ("wake", "sleep", "reboot"):
+        if action not in ("wake", "sleep", "reboot", "reset_app"):
             raise ValueError("Invalid manual action")
         # Never wait for ADB in a web request or let two actions overlap.
         if not self.mutex.acquire(blocking=False):
@@ -363,9 +366,9 @@ class Frame:
                 # Preserve legacy reboot cooldown even when a display action replaces its job.
                 self.state["last_reboot_requested_at"] = last_reboot
                 self.state["override"] = dict(
-                    mode="day" if action == "wake" else "night",
+                    mode="day" if action in ("wake", "reset_app") else "night",
                     expires_at=next_boundary(datetime.now(self.zone),
-                                             self.cfg["sleep" if action == "wake" else "wake"]),
+                                             self.cfg["sleep" if action in ("wake", "reset_app") else "wake"]),
                 )
             try:
                 self.save()  # Persist intent before any device receives commands.
@@ -402,9 +405,19 @@ class Frame:
                     job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
                     self.save()
                     return False
-                if action == "wake":
+                if action in ("wake", "reset_app"):
+                    if action == "reset_app" and not job.get("cache_trimmed"):
+                        self.trim_device_caches()
+                        job.update(cache_trimmed=True, phase="starting",
+                                   message="Cache trim completed; restarting ImmichFrame")
+                        self.save()
+                        if not self.active_override(datetime.now(self.zone)):
+                            job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
+                            self.save()
+                            return False
                     self.launch()
-                    message = "App launched and day brightness restored"
+                    message = ("App reset completed: device cache trim finished and ImmichFrame launched"
+                               if action == "reset_app" else "App launched and day brightness restored")
                 else:
                     self.night()
                     self.state.pop("completed_window", None)

@@ -163,6 +163,7 @@ def create_app(config, registry, data):
 
     @app.post("/frames/<name>/wake", defaults={"action": "wake"})
     @app.post("/frames/<name>/sleep", defaults={"action": "sleep"})
+    @app.post("/frames/<name>/reset_app", defaults={"action": "reset_app"})
     def display_action(name, action):
         token = request.form.get("request_id", "")
         if not re.fullmatch(r"[0-9a-f]{32}", token):
@@ -177,7 +178,7 @@ def create_app(config, registry, data):
             app.logger.exception("Cannot save manual display request")
             flash("Could not save the request. Check the data directory and try again.", "error")
         else:
-            flash(f"{action.capitalize()} requested for {name}. Progress will appear below.", "success")
+            flash(f"{action.replace('_', ' ').capitalize()} requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
 
     @app.post("/frames/actions/wake", defaults={"action": "wake"})

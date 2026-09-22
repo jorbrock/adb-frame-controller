@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add Reset app beside Reboot frame: stop ImmichFrame, trim device caches, and
+  relaunch without rebooting. Use a persisted background request with Wake-style
+  scheduling overrides and cache-trim deduplication during launch retries.
+
 - Trim eligible Android app caches each morning after stopping ImmichFrame,
   before the scheduled reboot or app-only launch. Persist completion per wake
   window and retry reported failures without consuming the reboot attempt.

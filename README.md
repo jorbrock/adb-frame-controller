@@ -18,6 +18,13 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   Removal requires a confirmation page. Empty configurations are supported.
 - Settings are validated before saving. Busy frames and active manual actions
   reject edits/removal; stale forms cannot overwrite newer changes.
+- **Reset app**, beside **Reboot frame**, stops ImmichFrame, trims eligible caches
+  across the device, and relaunches ImmichFrame with day brightness. Settings are
+  retained; cached photos may need to download again. Like Wake frame, it holds
+  the frame awake until the next sleep time (or a manual Sleep request), and works
+  with scheduling disabled. Launch retries do not repeat a completed cache trim;
+  a new reset request does. The action uses the same 15-minute retry limit and
+  busy protection as other manual controls.
 - **Wake frame** restores day brightness and launches the app without rebooting.
   **Sleep frame** stops the app and sets brightness to zero while keeping ADB reachable.
   Manual overrides and their expiry are shown on each card; see below for scheduling behavior.
@@ -130,8 +137,7 @@ controller is stopped, or add the frames through the web UI.
   `restart_app` mode. This requests a full trim of eligible Android caches across
   apps; cached photos may need to download again. Allow up to 120 seconds for the
   command. Reported failures retry; a completed trim is persisted per wake window
-  so launch retries and controller restarts do not repeat it. Manual controls
-  do not trigger this cleanup.
+  so launch retries and controller restarts do not repeat it. Manual Reset app also runs this cleanup on demand.
 - In reboot mode: one reboot attempt per wake window, reconnect, confirm the
   kernel boot ID changed, wait for `sys.boot_completed=1`, allow an additional
   60 seconds, wake the screen with keycode 224, set manual brightness to
