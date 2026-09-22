@@ -62,6 +62,16 @@ class GlobalActionTests(unittest.TestCase):
             self.post(action)
             self.assertEqual(previous, [frame.state for frame in self.registry.frames.values()])
 
+    def test_global_actions_skip_disabled_frames(self):
+        frame = self.registry.frames['living-room']
+        frame.cfg['enabled'] = False
+        for action in ('wake', 'sleep'):
+            self.registry.frames['bedroom'].state = {}
+            accepted, errors = self.registry.request_all(action, 'a' * 32)
+            self.assertEqual(accepted, ['bedroom'])
+            self.assertEqual(errors, {})
+            self.assertFalse(frame.state)
+
     def test_busy_frame_does_not_block_other_frames(self):
         self.login()
         frame = self.registry.frames['living-room']

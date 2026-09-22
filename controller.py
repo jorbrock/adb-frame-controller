@@ -119,6 +119,9 @@ def validate_config(config):
         for field in ("name", "address", "package", "component", "wake", "sleep"):
             if not isinstance(frame.get(field), str) or not frame[field]:
                 raise ValueError(f"{field} is required and must be text")
+        frame.setdefault("enabled", True)
+        if type(frame["enabled"]) is not bool:
+            raise ValueError("Frame enabled must be a boolean")
         name = frame["name"]
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name in ids:
             raise ValueError("Frame names must be unique letters/numbers/underscore/dash")
@@ -227,6 +230,8 @@ class Frame:
         return {}
 
     def tick(self):
+        if not self.cfg.get("enabled", True):
+            return
         now = datetime.now(self.zone)
         if self.state.get("override") and not self.active_override(now):
             del self.state["override"]
@@ -345,6 +350,8 @@ class Frame:
         if not self.mutex.acquire(blocking=False):
             raise RuntimeError("Frame is busy. Try again shortly.")
         try:
+            if not self.cfg.get("enabled", True):
+                raise RuntimeError("Frame management is disabled. Enable it in settings first.")
             old = self.state.get("manual", {})
             if old.get("id") == request_id:
                 if old.get("action", "reboot") != action:
@@ -383,6 +390,8 @@ class Frame:
             self.mutex.release()
 
     def manual_tick(self):
+        if not self.cfg.get("enabled", True):
+            return False
         job = self.state.get("manual", {})
         if job.get("phase") not in ACTIVE_PHASES:
             return False
@@ -503,7 +512,8 @@ class Frame:
                         self.status("error", error=str(exc))
                     except OSError:
                         LOG.exception("Cannot write frame status")
-            self.wakeup.wait(5 if self.state.get("manual", {}).get("phase") in ACTIVE_PHASES else 30)
+            self.wakeup.wait(None if not self.cfg.get("enabled", True) else
+                             5 if self.state.get("manual", {}).get("phase") in ACTIVE_PHASES else 30)
 
 
 class FrameRegistry:
@@ -563,6 +573,8 @@ class FrameRegistry:
         accepted, errors = [], {}
         with self.lock:
             for name, frame in self.frames.items():
+                if not frame.cfg.get("enabled", True):
+                    continue
                 try:
                     frame.request_action(action, token)
                 except RuntimeError as exc:
@@ -612,7 +624,8 @@ class FrameRegistry:
                 raise RuntimeError("Frame is busy. Try again shortly.")
             added = None
             try:
-                if frame is not None and frame.state.get("manual", {}).get("phase") in ACTIVE_PHASES:
+                if (frame is not None and frame.state.get("manual", {}).get("phase") in ACTIVE_PHASES
+                        and (cfg is None or cfg.get("enabled", True))):
                     raise RuntimeError("Wait for the manual action to finish before editing or removing this frame.")
                 if frame is None:
                     added = Frame(cfg, self.config["timezone"], self.config.get("enabled", False), self.data)
@@ -640,6 +653,12 @@ class FrameRegistry:
                     frame.path = self.data / (cfg["name"] + ".state.json")
                     frame.status_path = self.data / (cfg["name"] + ".status.json")
                     frame.log_path = self.data / (cfg["name"] + ".log.jsonl")
+                    if not cfg["enabled"]:
+                        job = frame.state.get("manual", {})
+                        if job.get("phase") in ACTIVE_PHASES:
+                            job.update(phase="cancelled", message="Frame management disabled.")
+                        frame.state.pop("override", None)
+                        frame.save()
                     frame.last_mode = None
                     frame.last_night = 0
                     frame.wakeup.set()

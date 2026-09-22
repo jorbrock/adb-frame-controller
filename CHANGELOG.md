@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add per-frame management enable/disable in settings. Disabled frames retain
+  configuration and history, issue no ADB commands or status checks, and are
+  excluded from manual and all-frame controls. Cancel pending manual work on disable.
+
 - Add Reset app beside Reboot frame: stop ImmichFrame, trim device caches, and
   relaunch without rebooting. Use a persisted background request with Wake-style
   scheduling overrides and cache-trim deduplication during launch retries.

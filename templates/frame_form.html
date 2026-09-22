@@ -9,6 +9,9 @@
 <form class="settings-form" method="post">
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <input type="hidden" name="revision" value="{{ revision }}">
+  <fieldset><legend>Management</legend>
+    <div class="field"><label for="enabled">Frame management</label><select id="enabled" name="enabled" aria-describedby="enabled-help"><option value="true" {% if frame.get('enabled', true) %}selected{% endif %}>Enabled</option><option value="false" {% if not frame.get('enabled', true) %}selected{% endif %}>Disabled</option></select><small id="enabled-help">Disabled frames keep their settings but receive no ADB commands or status checks, including manual and all-frame actions.</small></div>
+  </fieldset>
   <fieldset><legend>Connection</legend>
     <div class="settings-grid">
       <div class="field"><label for="name">Name</label><input id="name" name="name" value="{{ frame.name }}" pattern="[A-Za-z0-9_\-]+" required aria-describedby="name-help"><small id="name-help">Unique name using letters, numbers, underscores, or dashes.</small></div>

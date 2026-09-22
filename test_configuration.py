@@ -96,6 +96,58 @@ class RegistryTests(unittest.TestCase):
         with patch.object(c, "DATA", self.data), patch.dict(os.environ, {}, clear=True):
             return c.load_config()
 
+    def test_frame_enabled_defaults_and_validation(self):
+        self.assertTrue(self.config["frames"][0]["enabled"])
+        for value in ("false", 0, None):
+            invalid = deepcopy(self.config)
+            invalid["frames"][0]["enabled"] = value
+            with self.assertRaisesRegex(ValueError, "Frame enabled"):
+                c.validate_config(invalid)
+
+    def test_disabled_frame_persists_and_sends_no_commands_or_status_updates(self):
+        frame = self.registry.frames["living-room"]
+        frame.state["completed_window"] = "2026-09-18"
+        self.change("living-room", {**frame.cfg, "enabled": False})
+        restored = c.FrameRegistry(self.load(), self.data).frames["living-room"]
+        self.assertFalse(restored.cfg["enabled"])
+        self.assertEqual(restored.state["completed_window"], "2026-09-18")
+        restored.adb = Mock()
+        restored.status = Mock()
+        restored.scheduled = True
+        restored.state["manual"] = dict(phase="queued", action="reboot")
+        restored.tick()
+        restored.manual_tick()
+        self.assertEqual(restored.adb.mock_calls, [])
+        restored.status.assert_not_called()
+        for action in ("wake", "sleep", "reboot", "reset_app"):
+            with self.assertRaisesRegex(RuntimeError, "management is disabled"):
+                restored.request_action(action, "a" * 32)
+
+    def test_disable_cancels_pending_work_and_reenable_preserves_history(self):
+        frame = self.registry.frames["living-room"]
+        frame.request_action("reset_app", "a" * 32)
+        frame.state["completed_window"] = "2026-09-18"
+        self.change("living-room", {**frame.cfg, "enabled": False})
+        self.assertEqual(frame.state["manual"]["phase"], "cancelled")
+        self.assertNotIn("override", frame.state)
+        self.change("living-room", {**frame.cfg, "enabled": True})
+        self.assertEqual(frame.state["completed_window"], "2026-09-18")
+        frame.adb = Mock()
+        frame.tick()  # Global scheduling is off; old manual work must not resume.
+        self.assertEqual(frame.adb.mock_calls, [])
+        frame.request_action("wake", "b" * 32)
+        self.assertEqual(frame.state["manual"]["phase"], "queued")
+
+    def test_disabled_worker_waits_until_settings_change(self):
+        frame = self.registry.frames["living-room"]
+        self.change("living-room", {**frame.cfg, "enabled": False})
+        frame.adb = Mock()
+        frame.wakeup = Mock()
+        frame.wakeup.wait.side_effect = lambda timeout: frame.stopped.set()
+        frame.work()
+        frame.wakeup.wait.assert_called_once_with(None)
+        self.assertEqual(frame.adb.mock_calls, [])
+
     def test_missing_frames_file_starts_empty_and_saved_list_survives_restart(self):
         self.assertEqual(self.load(), {**self.config, "frames": []})
         self.registry = c.FrameRegistry(self.load(), self.data)
@@ -297,7 +349,26 @@ class ConfigurationWebTests(unittest.TestCase):
             session["csrf"] = "csrf-token"
 
     def form(self, **changes):
-        return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, **changes}
+        return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, "enabled": "true", **changes}
+
+    def test_disable_and_reenable_from_settings(self):
+        response = self.client.post("/frames/living-room/edit", data=self.form(enabled="false"))
+        self.assertEqual(response.status_code, 303)
+        frame = self.registry.frames["living-room"]
+        self.assertFalse(frame.cfg["enabled"])
+        page = self.client.get("/").data
+        self.assertIn(b"Management disabled", page)
+        self.assertIn(b"No commands or status checks are running", page)
+        self.assertIn(b'value="false" selected', self.client.get("/frames/living-room/edit").data)
+        for action in ("wake", "sleep", "reboot", "reset_app"):
+            response = self.client.post(f"/frames/living-room/{action}",
+                data=dict(csrf="csrf-token", request_id="a" * 32), follow_redirects=True)
+            self.assertIn(b"management is disabled", response.data)
+        self.assertEqual(self.client.post("/frames/living-room/edit",
+            data=self.form(enabled="true")).status_code, 303)
+        self.assertTrue(frame.cfg["enabled"])
+        self.assertEqual(self.client.post("/frames/living-room/edit",
+            data=self.form(enabled="invalid")).status_code, 400)
 
     def test_forms_and_empty_state(self):
         for path in ("/", "/frames/new", "/frames/living-room/edit", "/frames/living-room/remove"):

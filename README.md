@@ -13,6 +13,12 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 - Lists configured frames with address, wake/sleep times, recent controller
   results, and manual action progress. Use **Add frame**, **Edit settings**, and
   **Remove** to manage up to 50 frames without restarting the controller.
+- Set **Frame management** to **Disabled** in a frame's settings to preserve its
+  configuration while stopping all ADB commands and device status checks. Manual
+  controls are disabled and all-frame actions skip it. Pending manual requests are
+  cancelled and manual wake/sleep holds are cleared. The frame keeps its current
+  display state. Re-enable management to resume normal operation with its existing
+  morning/reboot history. Existing frames default to Enabled.
 - Frame forms cover name, ADB address, app package/activity, wake/sleep times,
   morning action, day brightness, boot delay, and night recheck interval.
   Removal requires a confirmation page. Empty configurations are supported.
