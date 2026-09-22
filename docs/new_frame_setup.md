@@ -153,7 +153,8 @@ On the **frame**, swipe down to open ImmichFrame settings:
    leave it empty. Do not enter the Immich API key here.
 3. On older Frameo devices, disable **WebView** as described in the
    [official Android/Frameo instructions](https://immichframe.dev/docs/getting-started/apps).
-   This mode has fewer rendering features but avoids relying on an old WebView.
+   Leave it disabled for the initial check, then follow the WebView 106 upgrade
+   section below to enable WebView on a compatible frame.
 4. Save/apply the settings, return to the slideshow, and confirm several photos
    advance. Disable any app-level automatic start or schedule option that would
    conflict with the controller. Leave Discreet Launcher as Home.
@@ -162,6 +163,117 @@ The package and activity above are also the values to use in the controller UI.
 If your APK differs, inspect installed packages with
 `adb shell pm list packages` and verify its launch activity
 before continuing.
+
+### Update WebView to 106 while connected by USB
+
+ImmichFrame documents **LineageOS WebView 106.0.5249.126 (arm64-v8a + arm-v7a,
+Android 6.0+)** for older Frameo devices, tested on 10.1-inch Android 6.0.1 frames.
+Download the APK using the link in its
+[Frameo WebView Update instructions](https://immichframe.dev/docs/getting-started/apps#frameo-webview-update).
+This replaces a system APK and requires root plus a writable `/system`; enabled
+ADB alone is insufficient. Apply it only to compatible firmware, and keep a newer
+working WebView on devices that already have one.
+
+#### Check the frame and back up its original APK
+
+Keep USB attached. On your **computer**, inspect the Android version, CPU ABIs,
+WebView version, and installed APK path:
+
+```bash
+adb shell getprop ro.build.version.release
+adb shell getprop ro.product.cpu.abilist
+adb shell dumpsys package com.android.webview
+adb shell pm path com.android.webview
+```
+
+In the package output, look for `versionName`. The commands below assume the APK
+path is `/system/app/webview/webview.apk`. If your output differs, stop and resolve
+that firmware's provider layout before using these paths.
+
+Save a backup on your computer, then stage the downloaded APK:
+
+```bash
+adb pull /system/app/webview/webview.apk ./webview-original.apk
+adb push /path/to/downloaded/webview-106.apk /sdcard/webview.apk
+adb shell
+```
+
+You are now in the **frame's shell**. Check privileges:
+
+```sh
+id
+```
+
+If it does not report `uid=0`, run `su`, then `id` again. If root is unavailable,
+leave WebView disabled in ImmichFrame and skip the system replacement.
+
+#### Replace the system WebView
+
+In the **root shell on the frame**, remount the system partition and preserve an
+on-device backup. Stop if either command fails; do not overwrite an existing
+`.bak` from an earlier attempt.
+
+```sh
+mount -o rw,remount /system
+test ! -e /system/app/webview/webview.apk.bak && cp /system/app/webview/webview.apk /system/app/webview/webview.apk.bak
+```
+
+After both the computer backup and on-device backup succeed, replace the APK and
+remove the old compiled WebView cache:
+
+```sh
+cp /sdcard/webview.apk /system/app/webview/webview.apk
+chown 0:0 /system/app/webview/webview.apk
+chmod 644 /system/app/webview/webview.apk
+rm -rf /system/app/webview/oat
+sync
+```
+
+Check each command for errors before continuing. If `restorecon` is available on
+the frame, run `restorecon /system/app/webview/webview.apk` to restore its SELinux
+label. Exit back to your computer's terminal (`exit` twice if you entered `su`),
+then reboot over USB:
+
+```bash
+adb reboot
+adb wait-for-device
+adb shell getprop sys.boot_completed
+```
+
+Wait until the last command returns `1`; `wait-for-device` alone only waits for
+ADB. Verify the installed version in **Android Settings → Apps → Show system →
+Android System WebView**, or repeat `adb shell dumpsys package com.android.webview`
+and check `versionName` for `106.0.5249.126`.
+
+Launch ImmichFrame again:
+
+```bash
+adb shell am start -W -n com.immichframe.immichframe/.MainActivity
+```
+
+Swipe down to settings, enable **WebView**, save/apply, and check that photos and
+any configured overlays render and advance. Confirm Home still opens Discreet
+Launcher. Keep USB attached for step 5.
+
+#### Restore the original if the replacement fails
+
+If Android and USB ADB remain accessible, disable WebView in ImmichFrame. Open
+`adb shell`, obtain root as above, and restore the saved system APK:
+
+```sh
+mount -o rw,remount /system
+cp /system/app/webview/webview.apk.bak /system/app/webview/webview.apk
+chown 0:0 /system/app/webview/webview.apk
+chmod 644 /system/app/webview/webview.apk
+rm -rf /system/app/webview/oat
+sync
+```
+
+Restore the SELinux label with `restorecon` if available, exit to the computer,
+and run `adb reboot`. If the on-device backup is missing, stage your computer's
+`webview-original.apk` with `adb push` and copy that file back from the root shell.
+If Android no longer boots or USB ADB is unavailable, recovery is firmware-specific;
+these shell commands require a working Android ADB session.
 
 ## 5. Test blank Home and display control over USB
 
