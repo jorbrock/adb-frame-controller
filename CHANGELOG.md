@@ -1,18 +1,27 @@
 # Changelog
 
-## Unreleased
-
-- Add per-frame management enable/disable in settings. Disabled frames retain
-  configuration and history, issue no ADB commands or status checks, and are
-  excluded from manual and all-frame controls. Cancel pending manual work on disable.
-
-- Add Reset app beside Reboot frame: stop ImmichFrame, trim device caches, and
-  relaunch without rebooting. Use a persisted background request with Wake-style
-  scheduling overrides and cache-trim deduplication during launch retries.
+## v1.5.0
 
 - Trim eligible Android app caches each morning after stopping ImmichFrame,
-  before the scheduled reboot or app-only launch. Persist completion per wake
-  window and retry reported failures without consuming the reboot attempt.
+  before the scheduled reboot or app-only launch. Allow up to 120 seconds for
+  trimming, persist completion per wake window, and retry reported failures
+  without consuming the reboot attempt or repeating completed trims on launch retries.
+- Add **Reset app** beside **Reboot frame**: stop ImmichFrame, trim device caches,
+  and relaunch without rebooting. Persist the background request and completed
+  cache trim across controller restarts. Like Wake frame, hold the frame awake
+  until the next sleep time or a manual Sleep request.
+- Add **Frame management** enable/disable in settings. Disabled frames retain
+  configuration and history, issue no ADB commands or status checks, and are
+  excluded from manual and all-frame controls. Cancel pending manual work and
+  clear manual wake/sleep holds on disable. Existing frames default to Enabled.
+
+### Upgrade
+
+Build the `frame-controller:1.5.0` image and recreate the service using the updated
+Compose file. Preserve the data volume to retain frame settings, credentials, ADB
+keys, controller state, and log history. No settings migration is required.
+Morning cache trimming is automatic and affects eligible caches across apps on
+the device; cached photos may need to download again on the next launch.
 
 ## v1.4.0
 
