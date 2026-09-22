@@ -168,9 +168,9 @@ class ADB:
         if self.run("get-state") != "device":
             raise RuntimeError("ADB not authorized or not online")
 
-    def shell(self, *args):
+    def shell(self, *args, timeout=20):
         # ADB passes a remote shell string; quote each argument for that shell too.
-        return self.run("shell", shlex.join(args))
+        return self.run("shell", shlex.join(args), timeout=timeout)
 
     def boot_id(self):
         value = self.shell("cat", "/proc/sys/kernel/random/boot_id")
@@ -265,6 +265,9 @@ class Frame:
         if self.cfg["morning_action"] == "reboot":
             boot_id = self.adb.boot_id()
             if self.state.get("attempted_window") != token:
+                self.trim_morning_caches(token)
+                if window(datetime.now(self.zone), self.cfg) != (mode, token):
+                    return
                 # Journal BEFORE the command. A crash can skip a reboot but
                 # cannot repeatedly reboot a frame in the same wake window.
                 self.state.update(attempted_window=token, previous_boot_id=boot_id)
@@ -286,6 +289,8 @@ class Frame:
         if time.time() < self.state["ready_at"]:
             self.status("waiting_for_boot_delay", mode=mode)
             return
+        if self.cfg["morning_action"] == "restart_app":
+            self.trim_morning_caches(token)
         # Recheck schedule before launch in case a command crossed bedtime.
         if window(datetime.now(self.zone), self.cfg) != (mode, token):
             return
@@ -294,6 +299,15 @@ class Frame:
         self.save()
         self.status("morning_sequence_completed", mode=mode)
         LOG.info("%s: morning application launch confirmed", self.cfg["name"])
+
+    def trim_morning_caches(self, token):
+        if self.state.get("cache_trimmed_window") == token:
+            return
+        self.adb.shell("am", "force-stop", self.cfg["package"])
+        self.adb.shell("pm", "trim-caches", "999999999999999999", timeout=120)
+        self.state["cache_trimmed_window"] = token
+        self.save()
+        LOG.info("%s: morning cache trim command completed", self.cfg["name"])
 
     def night(self):
         # Attempt every action even if an earlier command fails.

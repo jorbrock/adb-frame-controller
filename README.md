@@ -125,7 +125,14 @@ controller is stopped, or add the frames through the web UI.
 - At night: `am force-stop PACKAGE`, set `screen_brightness_mode` to `0`
   (manual), then set `screen_brightness` to `0`. Android stays awake for network ADB.
   Repeats every five minutes by default to handle incidental app starts or brightness changes.
-- In the morning: one reboot attempt per wake window, reconnect, confirm the
+- Each morning, force-stop ImmichFrame and run
+  `pm trim-caches 999999999999999999` before the reboot, or before app launch in
+  `restart_app` mode. This requests a full trim of eligible Android caches across
+  apps; cached photos may need to download again. Allow up to 120 seconds for the
+  command. Reported failures retry; a completed trim is persisted per wake window
+  so launch retries and controller restarts do not repeat it. Manual controls
+  do not trigger this cleanup.
+- In reboot mode: one reboot attempt per wake window, reconnect, confirm the
   kernel boot ID changed, wait for `sys.boot_completed=1`, allow an additional
   60 seconds, wake the screen with keycode 224, set manual brightness to
   `day_brightness` (default `128`, configurable per frame from `1` to `255`),

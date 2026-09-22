@@ -61,7 +61,7 @@ class DisplayTests(unittest.TestCase):
         frame = c.Frame(self.cfg, "UTC", scheduled, self.data)
         frame.adb = Mock()
         frame.adb.boot_id.return_value = "old-boot"
-        frame.adb.shell.side_effect = lambda *args: "Status: ok" if args[:2] == ("am", "start") else "1"
+        frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
         frame.night = Mock(wraps=frame.night)
         frame.launch = Mock(wraps=frame.launch)
         return frame

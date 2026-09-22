@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Trim eligible Android app caches each morning after stopping ImmichFrame,
+  before the scheduled reboot or app-only launch. Persist completion per wake
+  window and retry reported failures without consuming the reboot attempt.
+
 ## v1.4.0
 
 - Add Wake all frames and Sleep all frames controls, using existing manual override

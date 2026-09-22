@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from zoneinfo import ZoneInfo
 
 import controller as c
@@ -62,7 +62,7 @@ class RecoveryTests(unittest.TestCase):
         frame.tick()
         frame.adb.run.assert_called_once_with("reboot", timeout=60)
         frame.adb.boot_id.return_value = "new-boot"
-        frame.adb.shell.side_effect = lambda *args: "Status: ok" if args[:2] == ("am", "start") else "1"
+        frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
         frame.tick()
         self.assertEqual(frame.state["completed_window"], "2026-09-18")
         recovered = self.frame()
@@ -73,12 +73,57 @@ class RecoveryTests(unittest.TestCase):
         frame = self.frame()
         frame.tick()
         frame.adb.boot_id.return_value = "new-boot"
-        frame.adb.shell.side_effect = lambda *args: "Error: Activity not found" if args[:2] == ("am", "start") else "1"
+        frame.adb.shell.side_effect = lambda *args, **kwargs: "Error: Activity not found" if args[:2] == ("am", "start") else "1"
         for _ in range(2):
             with self.assertRaisesRegex(RuntimeError, "launch not confirmed"):
                 frame.tick()
         frame.adb.run.assert_called_once_with("reboot", timeout=60)
         self.assertNotIn("completed_window", frame.state)
+
+    def test_cache_trim_precedes_reboot(self):
+        frame = self.frame()
+        frame.tick()
+        calls = frame.adb.mock_calls
+        stop = call.shell("am", "force-stop", self.cfg["package"])
+        trim = call.shell("pm", "trim-caches", "999999999999999999", timeout=120)
+        self.assertLess(calls.index(stop), calls.index(trim))
+        self.assertLess(calls.index(trim), calls.index(call.run("reboot", timeout=60)))
+        self.assertEqual(frame.state["cache_trimmed_window"], "2026-09-18")
+
+    def test_cache_trim_failure_retries_before_reboot(self):
+        frame = self.frame()
+        frame.adb.shell.side_effect = ["", RuntimeError("trim failed")]
+        with self.assertRaisesRegex(RuntimeError, "trim failed"):
+            frame.tick()
+        frame.adb.run.assert_not_called()
+        self.assertNotIn("attempted_window", frame.state)
+        self.assertNotIn("cache_trimmed_window", frame.state)
+        frame.adb.shell.side_effect = None
+        frame.tick()
+        frame.adb.run.assert_called_once_with("reboot", timeout=60)
+
+    def test_app_only_trim_survives_failed_launch_and_controller_restart(self):
+        self.cfg["morning_action"] = "restart_app"
+        frame = self.frame()
+        frame.adb.shell.side_effect = lambda *args, **kwargs: (
+            "Error: unavailable" if args[:2] == ("am", "start") else "1")
+        with self.assertRaisesRegex(RuntimeError, "launch not confirmed"):
+            frame.tick()
+        calls = frame.adb.shell.call_args_list
+        trim = call("pm", "trim-caches", "999999999999999999", timeout=120)
+        self.assertLess(calls.index(call("am", "force-stop", self.cfg["package"])),
+                        calls.index(trim))
+        self.assertLess(calls.index(trim), calls.index(
+            call("am", "start", "-W", "-n", self.cfg["component"])))
+        recovered = self.frame()
+        recovered.adb.shell.side_effect = lambda *args, **kwargs: (
+            "Status: ok" if args[:2] == ("am", "start") else "1")
+        recovered.tick()
+        self.assertNotIn(trim, recovered.adb.shell.call_args_list)
+        self.assertEqual(recovered.state["completed_window"], "2026-09-18")
+        self.mock_time.now.return_value = datetime(2026, 9, 19, 8, tzinfo=ZoneInfo("UTC"))
+        recovered.tick()
+        self.assertIn(trim, recovered.adb.shell.call_args_list)
 
     def test_night_attempts_dimming_even_if_stop_fails(self):
         self.mock_time.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
@@ -128,7 +173,7 @@ class RecoveryTests(unittest.TestCase):
     def test_brightness_failure_prevents_morning_completion(self):
         self.cfg["morning_action"] = "restart_app"
         frame = self.frame()
-        def shell(*args):
+        def shell(*args, **kwargs):
             if args[:4] == ("settings", "put", "system", "screen_brightness"):
                 raise RuntimeError("brightness failed")
             return "1"
@@ -147,7 +192,7 @@ class RecoveryTests(unittest.TestCase):
     def test_restart_app_mode_never_reboots(self):
         self.cfg["morning_action"] = "restart_app"
         frame = self.frame()
-        frame.adb.shell.side_effect = lambda *args: "Status: ok" if args[:2] == ("am", "start") else "1"
+        frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
         frame.tick()
         frame.adb.run.assert_not_called()
         frame.adb.boot_id.assert_not_called()
