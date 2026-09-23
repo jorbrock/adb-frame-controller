@@ -315,7 +315,7 @@ class Frame:
 
     def trim_device_caches(self):
         self.adb.shell("am", "force-stop", self.cfg["package"])
-        self.adb.shell("pm", "trim-caches", "999999999999999999", timeout=120)
+        self.adb.shell("pm", "trim-caches", "999G", timeout=120)
 
     def night(self):
         # Attempt every action even if an earlier command fails.

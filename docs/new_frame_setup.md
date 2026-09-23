@@ -312,7 +312,12 @@ With the initial setup complete and USB still connected, run on your **computer*
 ```bash
 adb tcpip 5555
 adb connect 192.168.30.200:5555
-adb devices -l
+adb shell "settings put global adb_enabled 1"
+adb shell "settings put global development_settings_enabled 1"
+adb shell su
+setprop persist.adb.tcp.port 5555
+exit
+adb reboot
 ```
 
 Accept any new debugging prompt on the frame. Disconnect USB, then verify access:
