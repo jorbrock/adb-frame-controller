@@ -1,4 +1,4 @@
-# ADB Frame Controller v1.5.0
+# ADB Frame Controller v1.5.1
 
 A small Python + ADB container with a local web interface that stops ImmichFrame and sets screen brightness to zero
 at night, then reboots and explicitly launches the app each morning. It operates
@@ -19,7 +19,7 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   cancelled and manual wake/sleep holds are cleared. The frame keeps its current
   display state. Re-enable management to resume normal operation with its existing
   morning/reboot history. Existing frames default to Enabled.
-- Frame forms cover name, ADB address, app package/activity, wake/sleep times,
+- Frame forms cover name, ADB address, optional Run as root, app package/activity, wake/sleep times,
   morning action, day brightness, boot delay, and night recheck interval.
   Removal requires a confirmation page. Empty configurations are supported.
 - Settings are validated before saving. Busy frames and active manual actions
@@ -146,7 +146,7 @@ controller is stopped, or add the frames through the web UI.
   (manual), then set `screen_brightness` to `0`. Android stays awake for network ADB.
   Repeats every five minutes by default to handle incidental app starts or brightness changes.
 - Each morning, force-stop ImmichFrame and run
-  `pm trim-caches 999999999999999999` before the reboot, or before app launch in
+  `pm trim-caches 999G` before the reboot, or before app launch in
   `restart_app` mode. This requests a full trim of eligible Android caches across
   apps; cached photos may need to download again. Allow up to 120 seconds for the
   command. Reported failures retry; a completed trim is persisted per wake window
@@ -262,7 +262,7 @@ These commands require appropriate host permissions:
 mkdir -p /mnt/tank/apps/frame-controller/data
 chown 3019:3019 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
-docker build -t frame-controller:1.5.0 .
+docker build -t frame-controller:1.5.1 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
@@ -347,7 +347,7 @@ If an older image reports `python: can't open file '/app/controller.py':
 [Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
 
 ```bash
-docker build --no-cache -t frame-controller:1.5.0 .
+docker build --no-cache -t frame-controller:1.5.1 .
 ```
 
 Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
@@ -356,7 +356,7 @@ does not replace its image. You can check the rebuilt image without starting any
 frame workers or mounting the data volume:
 
 ```bash
-docker run --rm --user 3019:3019 --entrypoint python frame-controller:1.5.0 -c "import controller, webui; print('Application readable')"
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:1.5.1 -c "import controller, webui; print('Application readable')"
 ```
 
 The host data dataset separately needs read/write access for UID/GID `3019:3019`,

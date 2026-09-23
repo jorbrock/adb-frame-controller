@@ -48,7 +48,7 @@ class ManualTests(unittest.TestCase):
         frame.tick()
         calls = frame.adb.shell.call_args_list
         stop = call("am", "force-stop", self.cfg["package"])
-        trim = call("pm", "trim-caches", "999999999999999999", timeout=120)
+        trim = call("pm", "trim-caches", "999G", timeout=120)
         start = call("am", "start", "-W", "-n", self.cfg["component"])
         self.assertLess(calls.index(stop), calls.index(trim))
         self.assertLess(calls.index(trim), calls.index(start))

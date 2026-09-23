@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.1
+
+- Add an optional **Run as root** setting per frame, disabled by default. When
+  enabled, request `adb root`, reconnect, and verify root access before scheduled
+  or manual frame commands. Report elevation failures without continuing the action.
+- Fix cache trimming to use `pm trim-caches 999G`. Update the command example and
+  regression tests to match the corrected command.
+- Expand frame setup and ADB connection troubleshooting guidance, including
+  TCP/IP authorization from a VM.
+
+### Upgrade
+
+Build the `frame-controller:1.5.1` image and recreate the service using the updated
+Compose file. Preserve the data volume to retain frame settings, credentials, ADB
+keys, controller state, and log history. No settings migration is required.
+Enable **Run as root** only for frames that require and support root access;
+existing frames continue without requesting root by default.
+
 ## v1.5.0
 
 - Trim eligible Android app caches each morning after stopping ImmichFrame,

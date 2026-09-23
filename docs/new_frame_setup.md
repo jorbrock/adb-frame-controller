@@ -411,7 +411,7 @@ On the **Docker/TrueNAS host**, use this repository's
 5. From the repository directory, build the local image and start it:
 
 ```bash
-docker build -t frame-controller:1.5.0 .
+docker build -t frame-controller:1.5.1 .
 docker compose -f docker-compose.yaml up -d
 ```
 

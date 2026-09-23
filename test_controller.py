@@ -130,7 +130,7 @@ class RecoveryTests(unittest.TestCase):
         frame.tick()
         calls = frame.adb.mock_calls
         stop = call.shell("am", "force-stop", self.cfg["package"])
-        trim = call.shell("pm", "trim-caches", "999999999999999999", timeout=120)
+        trim = call.shell("pm", "trim-caches", "999G", timeout=120)
         self.assertLess(calls.index(stop), calls.index(trim))
         self.assertLess(calls.index(trim), calls.index(call.run("reboot", timeout=60)))
         self.assertEqual(frame.state["cache_trimmed_window"], "2026-09-18")
@@ -155,7 +155,7 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "launch not confirmed"):
             frame.tick()
         calls = frame.adb.shell.call_args_list
-        trim = call("pm", "trim-caches", "999999999999999999", timeout=120)
+        trim = call("pm", "trim-caches", "999G", timeout=120)
         self.assertLess(calls.index(call("am", "force-stop", self.cfg["package"])),
                         calls.index(trim))
         self.assertLess(calls.index(trim), calls.index(
