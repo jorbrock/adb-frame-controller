@@ -16,6 +16,7 @@
     <div class="settings-grid">
       <div class="field"><label for="name">Name</label><input id="name" name="name" value="{{ frame.name }}" pattern="[A-Za-z0-9_\-]+" required aria-describedby="name-help"><small id="name-help">Unique name using letters, numbers, underscores, or dashes.</small></div>
       <div class="field"><label for="address">ADB address</label><input id="address" name="address" value="{{ frame.address }}" placeholder="192.168.40.61:5555" required aria-describedby="address-help"><small id="address-help">IPv4 address or hostname, followed by a port. Authorize this controller on the frame first.</small></div>
+      <div class="field"><label class="checkbox-label" for="run_as_root"><input id="run_as_root" name="run_as_root" type="checkbox" value="true" {% if frame.get('run_as_root', false) %}checked{% endif %} aria-describedby="root-help">Run as root</label><small id="root-help">Run adb root before frame commands. Enable only for frames that require and support root access.</small></div>
       <div class="field"><label for="package">App package</label><input id="package" name="package" value="{{ frame.package }}" required></div>
       <div class="field"><label for="component">Activity component</label><input id="component" name="component" value="{{ frame.component }}" required aria-describedby="component-help"><small id="component-help">Package/activity, for example com.immichframe.immichframe/.MainActivity.</small></div>
     </div>

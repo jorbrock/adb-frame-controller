@@ -92,6 +92,13 @@ change saves the complete list, which is loaded again on restart. No `config.jso
 file or `/config` mount is needed. Back up the data directory and your Compose
 file. Invalid saved settings fail validation instead of being discarded.
 
+**Run as root** is optional for each frame and defaults to off (`run_as_root: false`
+in `frames.json`). Enable it for frames that require and support `adb root`. Before
+manual or scheduled commands, the controller requests root, waits for ADB to
+reconnect, and verifies root access. If elevation fails, the action reports an
+error without continuing. Leave it unchecked for frames that use normal ADB
+permissions. Unchecking it stops requesting root; it does not run `adb unroot`.
+
 Changes apply to live workers. Adding a frame while scheduling is enabled can
 immediately start its morning sequence or apply night mode. Edits preserve reboot
 history, including when renaming a frame: a completed morning sequence does not

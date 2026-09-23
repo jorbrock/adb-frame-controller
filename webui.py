@@ -222,7 +222,7 @@ def create_app(config, registry, data):
     def edit_frame(name=None):
         values, revision = configuration(name)
         if name is None:
-            values = dict(name="", address="", enabled=True, package="com.immichframe.immichframe",
+            values = dict(name="", address="", enabled=True, run_as_root=False, package="com.immichframe.immichframe",
                           component="com.immichframe.immichframe/.MainActivity",
                           wake="07:00", sleep="22:00", morning_action="reboot",
                           day_brightness=128, boot_delay_seconds=60, night_recheck_seconds=300)
@@ -237,6 +237,7 @@ def create_app(config, registry, data):
             values["enabled"] = enabled == "true"
             if enabled not in ("true", "false"):
                 error, code = "Frame enabled must be true or false.", 400
+            values["run_as_root"] = request.form.get("run_as_root") == "true"
             parsed = dict(values)
             for field in ("day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
                 try:

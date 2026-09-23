@@ -96,6 +96,20 @@ class RegistryTests(unittest.TestCase):
         with patch.object(c, "DATA", self.data), patch.dict(os.environ, {}, clear=True):
             return c.load_config()
 
+    def test_root_defaults_validation_and_live_persistence(self):
+        frame = self.registry.frames["living-room"]
+        self.assertFalse(frame.cfg["run_as_root"])
+        self.assertFalse(frame.adb.run_as_root)
+        for value in ("true", 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "run_as_root"):
+                self.change("living-room", {**frame.cfg, "run_as_root": value})
+        for enabled in (True, False):
+            self.change("living-room", {**frame.cfg, "run_as_root": enabled})
+            self.assertEqual(frame.adb.run_as_root, enabled)
+            restored = c.FrameRegistry(self.load(), self.data).frames["living-room"]
+            self.assertEqual(restored.cfg["run_as_root"], enabled)
+            self.assertEqual(restored.adb.run_as_root, enabled)
+
     def test_frame_enabled_defaults_and_validation(self):
         self.assertTrue(self.config["frames"][0]["enabled"])
         for value in ("false", 0, None):
@@ -350,6 +364,27 @@ class ConfigurationWebTests(unittest.TestCase):
 
     def form(self, **changes):
         return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, "enabled": "true", **changes}
+
+    def test_root_checkbox_add_edit_and_validation_error(self):
+        for path in ("/frames/new", "/frames/living-room/edit"):
+            page = self.client.get(path).data
+            self.assertIn(b'name="run_as_root"', page)
+            self.assertNotIn(b'checked', page)
+        response = self.client.post("/frames/new", data=self.form(
+            name="kitchen", address="host:5555", run_as_root="true"))
+        self.assertEqual(response.status_code, 303)
+        frame = self.registry.frames["kitchen"]
+        self.assertTrue(frame.adb.run_as_root)
+        self.assertIn(b'checked', self.client.get("/frames/kitchen/edit").data)
+        response = self.client.post("/frames/kitchen/edit", data=self.form(
+            name="kitchen", address="host:5555", run_as_root="true", wake="25:00"))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b'checked', response.data)
+        unchecked = self.form(name="kitchen", address="host:5555")
+        unchecked.pop("run_as_root", None)
+        self.assertEqual(self.client.post("/frames/kitchen/edit", data=unchecked).status_code, 303)
+        self.assertFalse(frame.adb.run_as_root)
+        self.assertNotIn(b'checked', self.client.get("/frames/kitchen/edit").data)
 
     def test_disable_and_reenable_from_settings(self):
         response = self.client.post("/frames/living-room/edit", data=self.form(enabled="false"))

@@ -122,6 +122,9 @@ def validate_config(config):
         frame.setdefault("enabled", True)
         if type(frame["enabled"]) is not bool:
             raise ValueError("Frame enabled must be a boolean")
+        frame.setdefault("run_as_root", False)
+        if type(frame["run_as_root"]) is not bool:
+            raise ValueError("Frame run_as_root must be a boolean")
         name = frame["name"]
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name in ids:
             raise ValueError("Frame names must be unique letters/numbers/underscore/dash")
@@ -155,8 +158,9 @@ def validate_config(config):
 
 
 class ADB:
-    def __init__(self, address):
+    def __init__(self, address, run_as_root=False):
         self.address = address
+        self.run_as_root = run_as_root
 
     def run(self, *args, timeout=20, targeted=True):
         command = ["adb"] + (["-s", self.address] if targeted else []) + list(args)
@@ -170,6 +174,14 @@ class ADB:
         self.run("connect", self.address, targeted=False)
         if self.run("get-state") != "device":
             raise RuntimeError("ADB not authorized or not online")
+
+        if self.run_as_root:
+            output = self.run("root")
+            # Root can restart adbd and drop the TCP connection.
+            self.run("connect", self.address, targeted=False)
+            self.run("wait-for-device", timeout=60)
+            if self.shell("id", "-u") != "0":
+                raise RuntimeError(f"ADB root failed: {output[:600] or 'shell is not running as root'}")
 
     def shell(self, *args, timeout=20):
         # ADB passes a remote shell string; quote each argument for that shell too.
@@ -186,7 +198,7 @@ class Frame:
     def __init__(self, config, timezone, scheduled=True, data=None):
         self.cfg = config
         self.zone = ZoneInfo(timezone)
-        self.adb = ADB(config["address"])
+        self.adb = ADB(config["address"], config.get("run_as_root", False))
         data = DATA if data is None else data
         self.path = data / (config["name"] + ".state.json")
         self.status_path = data / (config["name"] + ".status.json")
@@ -649,7 +661,7 @@ class FrameRegistry:
                     self.workers.pop(name, None)
                 else:
                     frame.cfg = cfg
-                    frame.adb = ADB(cfg["address"])
+                    frame.adb = ADB(cfg["address"], cfg.get("run_as_root", False))
                     frame.path = self.data / (cfg["name"] + ".state.json")
                     frame.status_path = self.data / (cfg["name"] + ".status.json")
                     frame.log_path = self.data / (cfg["name"] + ".log.jsonl")
