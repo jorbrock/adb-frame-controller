@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Exit stuck boot animations after Android reports boot completion during scheduled
+  and manual reboots, before the configured boot delay and app launch.
+
 - Make individual and all-frame Wake/Sleep controls follow each frame's HTTP
   undim/dim settings, retaining ADB app launch/stop for other action settings.
 
