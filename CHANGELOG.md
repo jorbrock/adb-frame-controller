@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make individual and all-frame Wake/Sleep controls follow each frame's HTTP
+  undim/dim settings, retaining ADB app launch/stop for other action settings.
+
 - Add a per-frame night action to dim through ImmichFrame's HTTP remote control
   while keeping the app open. The default remains stop app and dim via ADB.
 - Add an HTTP undim morning action that skips reboot, app restart, and cache trim.

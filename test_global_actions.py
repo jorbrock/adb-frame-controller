@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import controller as c
 from test_configuration import config
@@ -61,6 +61,40 @@ class GlobalActionTests(unittest.TestCase):
             previous = [deepcopy(frame.state) for frame in self.registry.frames.values()]
             self.post(action)
             self.assertEqual(previous, [frame.state for frame in self.registry.frames.values()])
+
+    def test_global_buttons_use_each_frames_action_settings(self):
+        self.login()
+        http_frame = self.registry.frames['living-room']
+        adb_frame = self.registry.frames['bedroom']
+        http_frame.cfg.update(morning_action='undim', night_action='dim')
+        for morning_action in ('reboot', 'restart_app'):
+            adb_frame.cfg['morning_action'] = morning_action
+            for action, command in (('wake', 'undim'), ('sleep', 'dim')):
+                with self.subTest(morning_action=morning_action, action=action):
+                    for frame in (http_frame, adb_frame):
+                        frame.state = {}
+                        frame.adb = Mock()
+                        frame.adb.shell.return_value = 'Status: ok'
+                    with patch.object(c, 'urlopen') as request:
+                        request.return_value.__enter__.return_value.status = 200
+                        response = self.post(action)
+                        self.assertIn(b'requested for 2 frame(s)', response.data)
+                        for frame in (http_frame, adb_frame):
+                            frame.tick()
+                            self.assertEqual(frame.state['manual']['phase'], 'completed')
+                        request.assert_called_once_with(
+                            'http://192.0.2.1:53287/' + command, timeout=20)
+                    self.assertEqual(http_frame.adb.mock_calls, [])
+                    adb_frame.adb.connect.assert_called_once()
+                    adb_frame.adb.run.assert_not_called()
+                    if action == 'wake':
+                        adb_frame.adb.shell.assert_any_call(
+                            'am', 'start', '-W', '-n', adb_frame.cfg['component'])
+                    else:
+                        adb_frame.adb.shell.assert_any_call(
+                            'am', 'force-stop', adb_frame.cfg['package'])
+                        adb_frame.adb.shell.assert_any_call(
+                            'settings', 'put', 'system', 'screen_brightness', '0')
 
     def test_global_actions_skip_disabled_frames(self):
         frame = self.registry.frames['living-room']

@@ -439,12 +439,14 @@ class Frame:
             return False
         # Bounded job, including unreachable frames. Never retry reboot itself.
         if time.time() - job["requested_at"] > 900:
-            job.update(phase="failed", message="Timed out after 15 minutes. Check ADB connectivity and the frame.")
+            job.update(phase="failed", message="Timed out after 15 minutes. Check frame connectivity and the configured action.")
             self.save()
             self.status(f"manual_{action}_failed", error=job["message"])
             return True
         try:
-            if action != "sleep" or self.cfg.get("night_action", "stop_app") != "dim":
+            http_wake = action == "wake" and self.cfg.get("morning_action") == "undim"
+            http_sleep = action == "sleep" and self.cfg.get("night_action", "stop_app") == "dim"
+            if not (http_wake or http_sleep):
                 self.adb.connect()
             if action != "reboot":
                 # A slow connection must not apply an override after its boundary.
@@ -452,7 +454,10 @@ class Frame:
                     job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
                     self.save()
                     return False
-                if action in ("wake", "reset_app"):
+                if http_wake:
+                    self.remote_command("undim")
+                    message = "ImmichFrame undim command completed"
+                elif action in ("wake", "reset_app"):
                     if action == "reset_app" and not job.get("cache_trimmed"):
                         self.trim_device_caches()
                         job.update(cache_trimmed=True, phase="starting",

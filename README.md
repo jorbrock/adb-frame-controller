@@ -154,8 +154,9 @@ controller is stopped, or add the frames through the web UI.
   app. ImmichFrame must already be running and port 53287 reachable from the
   controller. Failed HTTP requests retry; completion persists across restarts.
   These endpoints are documented in [ImmichFrame's remote control guide](https://immichframe.dev/docs/getting-started/apps).
-  Manual Wake still launches the app; Reset app and Reboot retain their existing
-  behavior. A manual reboot at night launches ImmichFrame before applying HTTP dim.
+  Individual and all-frame Wake/Sleep buttons use each frame's morning/night
+  HTTP option when selected; otherwise they launch/stop the app via ADB as before.
+  Reset app and Reboot retain their existing behavior. A manual reboot at night launches ImmichFrame before applying HTTP dim.
 - In reboot or restart-app morning mode, force-stop ImmichFrame and run
   `pm trim-caches 999G` before the reboot, or before app launch in
   `restart_app` mode. This requests a full trim of eligible Android caches across

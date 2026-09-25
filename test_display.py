@@ -74,6 +74,41 @@ class DisplayTests(unittest.TestCase):
         frame.adb.run.assert_not_called()
         frame.adb.boot_id.assert_not_called()
 
+    def test_manual_http_wake_retries_across_restart_and_holds_awake(self):
+        self.cfg["morning_action"] = "undim"
+        frame = self.frame()
+        frame.request_action("wake", "a" * 32)
+        with patch.object(c, "urlopen") as request:
+            request.side_effect = OSError("unreachable")
+            with self.assertLogs(c.LOG, level="WARNING"):
+                frame.tick()
+            self.assertNotEqual(frame.state["manual"]["phase"], "completed")
+            self.assertEqual(frame.adb.mock_calls, [])
+            recovered = self.frame()
+            request.side_effect = None
+            request.return_value.__enter__.return_value.status = 200
+            recovered.tick()
+            request.assert_called_with("http://192.0.2.1:53287/undim", timeout=20)
+            self.assertEqual(recovered.state["manual"]["phase"], "completed")
+            self.assertIn("undim command completed", recovered.state["manual"]["message"])
+            self.now += timedelta(minutes=10)
+            recovered.tick()
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(recovered.adb.mock_calls, [])
+            self.assertEqual(recovered.snapshot()["mode"], "day")
+
+    def test_manual_reset_still_launches_with_http_morning_action(self):
+        self.cfg["morning_action"] = "undim"
+        frame = self.frame()
+        frame.request_action("reset_app", "a" * 32)
+        with patch.object(c, "urlopen") as request:
+            frame.tick()
+            request.assert_not_called()
+        frame.adb.connect.assert_called_once()
+        frame.launch.assert_called_once()
+        frame.adb.shell.assert_any_call("pm", "trim-caches", "999G", timeout=120)
+        self.assertEqual(frame.state["manual"]["phase"], "completed")
+
     def test_manual_sleep_uses_http_dim_without_adb(self):
         self.cfg["night_action"] = "dim"
         frame = self.frame()
