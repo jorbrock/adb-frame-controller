@@ -223,13 +223,13 @@ class Frame:
         previous = read_json(self.status_path, {})
         atomic_json(self.status_path, entry)
         try:
-            # Manual wake is checked every cycle without sending device commands.
-            # Refresh the status timestamp, but only log changes to this held state.
-            unchanged_wake = result == "manual_wake_active" and (
+            # These states are checked every cycle without sending device commands.
+            # Refresh the status timestamp, but only log changes to these states.
+            unchanged_state = result in ("manual_wake_active", "morning_sequence_completed") and (
                 {key: value for key, value in entry.items() if key != "updated_at"}
                 == {key: value for key, value in previous.items() if key != "updated_at"}
             )
-            if unchanged_wake and self.log_path.exists() and self.log_path.stat().st_size:
+            if unchanged_state and self.log_path.exists() and self.log_path.stat().st_size:
                 return
             frame_log.append(self.log_path, entry, previous)
         except OSError:

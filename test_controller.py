@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 from zoneinfo import ZoneInfo
@@ -113,6 +113,38 @@ class RecoveryTests(unittest.TestCase):
         recovered = self.frame()
         recovered.tick()
         recovered.adb.connect.assert_not_called()
+
+    def test_morning_completion_logs_once_across_ticks_and_restart(self):
+        self.cfg["morning_action"] = "restart_app"
+        frame = self.frame()
+        frame.adb.shell.side_effect = lambda *args, **kwargs: (
+            "Status: ok" if args[:2] == ("am", "start") else "1")
+        start = self.mock_time.now.return_value
+        frame.tick()
+        frame.adb.reset_mock()
+        for seconds in (30, 60):
+            self.mock_time.now.return_value = start + timedelta(seconds=seconds)
+            frame.tick()
+        frame.adb.connect.assert_not_called()
+        recovered = self.frame()
+        self.mock_time.now.return_value = start + timedelta(seconds=90)
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        records = list(c.frame_log.entries(frame.log_path))
+        self.assertEqual([r["result"] for r in records], ["morning_sequence_completed"])
+        self.assertEqual(records[0]["updated_at"], start.isoformat())
+        self.assertEqual(c.read_json(frame.status_path, {})["updated_at"],
+                         (start + timedelta(seconds=90)).isoformat())
+        # A later morning must still record its successful launch.
+        self.mock_time.now.return_value = start.replace(hour=23)
+        recovered.tick()
+        self.mock_time.now.return_value = start + timedelta(days=1)
+        recovered.adb.shell.side_effect = lambda *args, **kwargs: (
+            "Status: ok" if args[:2] == ("am", "start") else "1")
+        recovered.tick()
+        self.assertEqual([r["result"] for r in c.frame_log.entries(frame.log_path)],
+                         ["morning_sequence_completed", "night_commands_sent",
+                          "morning_sequence_completed"])
 
     def test_failed_launch_retries_without_reboot(self):
         frame = self.frame()
