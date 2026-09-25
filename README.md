@@ -142,10 +142,21 @@ controller is stopped, or add the frames through the web UI.
 
 - Independent worker per frame; one unreachable device does not block the others.
 - Per-frame local wake/sleep times, using an IANA timezone with daylight saving time.
-- At night: `am force-stop PACKAGE`, set `screen_brightness_mode` to `0`
+- By default at night (`night_action: stop_app`): `am force-stop PACKAGE`, set `screen_brightness_mode` to `0`
   (manual), then set `screen_brightness` to `0`. Android stays awake for network ADB.
   Repeats every five minutes by default to handle incidental app starts or brightness changes.
-- Each morning, force-stop ImmichFrame and run
+- Select **Dim via ImmichFrame HTTP** (`night_action: dim`) to keep ImmichFrame
+  open and send `GET http://HOST:53287/dim` at night, including night rechecks and
+  manual Sleep. HOST comes from the frame's ADB address.
+- Select **Undim via ImmichFrame HTTP** (`morning_action: undim`) to send
+  `GET http://HOST:53287/undim` once per wake window, without ADB, cache trimming,
+  boot delay, or app restart. Pair this with HTTP dim: undim cannot start a stopped
+  app. ImmichFrame must already be running and port 53287 reachable from the
+  controller. Failed HTTP requests retry; completion persists across restarts.
+  These endpoints are documented in [ImmichFrame's remote control guide](https://immichframe.dev/docs/getting-started/apps).
+  Manual Wake still launches the app; Reset app and Reboot retain their existing
+  behavior. A manual reboot at night launches ImmichFrame before applying HTTP dim.
+- In reboot or restart-app morning mode, force-stop ImmichFrame and run
   `pm trim-caches 999G` before the reboot, or before app launch in
   `restart_app` mode. This requests a full trim of eligible Android caches across
   apps; cached photos may need to download again. Allow up to 120 seconds for the
@@ -160,7 +171,7 @@ controller is stopped, or add the frames through the web UI.
   container restart. A failed/ambiguous reboot is not automatically repeated.
   Connection and launch failures retry every 30 seconds.
 - The scheduler catches up after downtime. Enabling or first starting it during
-  the day immediately begins that day's morning sequence, including a reboot.
+  the day immediately begins that day's configured morning action.
   Starting it at night immediately applies night mode. UI schedule changes apply live.
 - Spring DST gaps take effect at the first available time after the scheduled
   boundary. Repeated fall hours share one wake-window date and do not add a reboot.

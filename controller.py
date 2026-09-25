@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.request import urlopen
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
@@ -144,8 +145,11 @@ def validate_config(config):
         if minute(frame["wake"]) == minute(frame["sleep"]):
             raise ValueError("Wake and sleep must differ")
         frame.setdefault("morning_action", "reboot")
-        if frame["morning_action"] not in ("reboot", "restart_app"):
-            raise ValueError("morning_action must be reboot or restart_app")
+        if frame["morning_action"] not in ("reboot", "restart_app", "undim"):
+            raise ValueError("morning_action must be reboot, restart_app, or undim")
+        frame.setdefault("night_action", "stop_app")
+        if frame["night_action"] not in ("stop_app", "dim"):
+            raise ValueError("night_action must be stop_app or dim")
         for key, default, low, high in (
             ("day_brightness", 128, 1, 255),
             ("boot_delay_seconds", 60, 0, 600),
@@ -268,15 +272,24 @@ class Frame:
         if mode == "night":
             if time.monotonic() - self.last_night < self.cfg["night_recheck_seconds"]:
                 return
-            self.adb.connect()
+            if self.cfg.get("night_action", "stop_app") != "dim":
+                self.adb.connect()
             self.night()
             self.last_night = time.monotonic()
             self.status("night_commands_sent", mode=mode)
-            LOG.info("%s: app stopped, brightness set to zero", self.cfg["name"])
+            LOG.info("%s: night action completed (%s)", self.cfg["name"],
+                     self.cfg.get("night_action", "stop_app"))
             return
         if self.state.get("completed_window") == token:
             # No claim that a running process is still advancing photographs.
             self.status("morning_sequence_completed", mode=mode)
+            return
+        if self.cfg["morning_action"] == "undim":
+            self.remote_command("undim")
+            self.state["completed_window"] = token
+            self.save()
+            self.status("morning_sequence_completed", mode=mode)
+            LOG.info("%s: morning undim command completed", self.cfg["name"])
             return
         self.adb.connect()
         if self.cfg["morning_action"] == "reboot":
@@ -329,7 +342,19 @@ class Frame:
         self.adb.shell("am", "force-stop", self.cfg["package"])
         self.adb.shell("pm", "trim-caches", "999G", timeout=120)
 
+    def remote_command(self, command):
+        host = self.cfg["address"].rsplit(":", 1)[0]
+        try:
+            with urlopen(f"http://{host}:53287/{command}", timeout=20) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status}")
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"ImmichFrame {command} failed: {exc}") from exc
+
     def night(self):
+        if self.cfg.get("night_action", "stop_app") == "dim":
+            self.remote_command("dim")
+            return
         # Attempt every action even if an earlier command fails.
         errors = []
         for args in (("am", "force-stop", self.cfg["package"]),
@@ -419,7 +444,8 @@ class Frame:
             self.status(f"manual_{action}_failed", error=job["message"])
             return True
         try:
-            self.adb.connect()
+            if action != "sleep" or self.cfg.get("night_action", "stop_app") != "dim":
+                self.adb.connect()
             if action != "reboot":
                 # A slow connection must not apply an override after its boundary.
                 if not self.active_override(datetime.now(self.zone)):
@@ -444,7 +470,9 @@ class Frame:
                     self.state.pop("completed_window", None)
                     self.last_night = time.monotonic()
                     self.last_mode = "night"
-                    message = "App stopped and brightness set to zero"
+                    message = ("ImmichFrame dim command completed"
+                               if self.cfg.get("night_action", "stop_app") == "dim"
+                               else "App stopped and brightness set to zero")
                 job.update(phase="completed", message=message, completed_at=time.time())
                 self.save()
                 self.status(f"manual_{action}_completed")
@@ -477,9 +505,11 @@ class Frame:
             override = self.active_override(now)
             mode = override.get("mode", mode if self.scheduled else "day")
             if mode == "night":
+                if self.cfg.get("night_action", "stop_app") == "dim":
+                    self.launch()
                 self.night()
                 self.state.pop("completed_window", None)
-                message = "Reboot completed; app stopped and brightness set to zero for sleep mode"
+                message = "Reboot completed; configured night action completed"
                 self.last_night = time.monotonic()
             else:
                 self.launch()

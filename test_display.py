@@ -74,6 +74,35 @@ class DisplayTests(unittest.TestCase):
         frame.adb.run.assert_not_called()
         frame.adb.boot_id.assert_not_called()
 
+    def test_manual_sleep_uses_http_dim_without_adb(self):
+        self.cfg["night_action"] = "dim"
+        frame = self.frame()
+        frame.request_action("sleep", "a" * 32)
+        with patch.object(c, "urlopen") as request:
+            request.return_value.__enter__.return_value.status = 200
+            frame.tick()
+            request.assert_called_once_with("http://192.0.2.1:53287/dim", timeout=20)
+        self.assertEqual(frame.adb.mock_calls, [])
+        self.assertEqual(frame.state["manual"]["phase"], "completed")
+        self.assertIn("dim command completed", frame.state["manual"]["message"])
+
+    def test_manual_night_reboot_launches_before_http_dim(self):
+        self.cfg["night_action"] = "dim"
+        frame = self.frame()
+        frame.request_action("reboot", "a" * 32)
+        frame.tick()
+        frame.adb.boot_id.return_value = "new-boot"
+        with patch.object(c, "urlopen") as request:
+            def respond(*args, **kwargs):
+                frame.launch.assert_called_once()
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            request.side_effect = respond
+            frame.tick()
+            request.assert_called_once_with("http://192.0.2.1:53287/dim", timeout=20)
+        self.assertEqual(frame.state["manual"]["phase"], "completed")
+
     def test_late_wake_skips_night_rechecks_and_next_morning_until_next_sleep(self):
         frame = self.frame()
         self.wake(frame)

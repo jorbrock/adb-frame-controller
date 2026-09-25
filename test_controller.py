@@ -146,6 +146,46 @@ class RecoveryTests(unittest.TestCase):
                          ["morning_sequence_completed", "night_commands_sent",
                           "morning_sequence_completed"])
 
+    def test_http_undim_retries_then_completes_across_restart_without_adb(self):
+        self.cfg["morning_action"] = "undim"
+        frame = self.frame()
+        with patch.object(c, "urlopen") as request:
+            request.side_effect = OSError("unreachable")
+            with self.assertRaisesRegex(RuntimeError, "ImmichFrame undim failed"):
+                frame.tick()
+            self.assertNotIn("completed_window", frame.state)
+            request.side_effect = None
+            request.return_value.__enter__.return_value.status = 200
+            frame.tick()
+            request.assert_called_with("http://192.0.2.1:53287/undim", timeout=20)
+            recovered = self.frame()
+            recovered.tick()
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(frame.adb.mock_calls, [])
+            self.assertEqual(recovered.adb.mock_calls, [])
+            self.mock_time.now.return_value += timedelta(days=1)
+            recovered.tick()
+            self.assertEqual(request.call_count, 3)
+
+    def test_http_dim_rechecks_and_retries_without_adb(self):
+        self.cfg["night_action"] = "dim"
+        self.mock_time.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
+        frame = self.frame()
+        with patch.object(c, "urlopen") as request, patch.object(c.time, "monotonic", return_value=1000) as clock:
+            request.return_value.__enter__.return_value.status = 500
+            with self.assertRaisesRegex(RuntimeError, "ImmichFrame dim failed.*500"):
+                frame.tick()
+            self.assertEqual(frame.last_night, 0)
+            request.return_value.__enter__.return_value.status = 200
+            frame.tick()
+            frame.tick()
+            self.assertEqual(request.call_count, 2)
+            clock.return_value = 1300
+            frame.tick()
+            self.assertEqual(request.call_count, 3)
+            request.assert_called_with("http://192.0.2.1:53287/dim", timeout=20)
+        self.assertEqual(frame.adb.mock_calls, [])
+
     def test_failed_launch_retries_without_reboot(self):
         frame = self.frame()
         frame.tick()

@@ -224,7 +224,7 @@ def create_app(config, registry, data):
         if name is None:
             values = dict(name="", address="", enabled=True, run_as_root=False, package="com.immichframe.immichframe",
                           component="com.immichframe.immichframe/.MainActivity",
-                          wake="07:00", sleep="22:00", morning_action="reboot",
+                          wake="07:00", sleep="22:00", morning_action="reboot", night_action="stop_app",
                           day_brightness=128, boot_delay_seconds=60, night_recheck_seconds=300)
         error, code = None, 200
         if request.method == "POST":
@@ -233,6 +233,7 @@ def create_app(config, registry, data):
             for field in ("name", "address", "package", "component", "wake", "sleep", "morning_action",
                           "day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
                 values[field] = request.form.get(field, "").strip()
+            values["night_action"] = request.form.get("night_action", values.get("night_action", "stop_app")).strip()
             enabled = request.form.get("enabled", "true")
             values["enabled"] = enabled == "true"
             if enabled not in ("true", "false"):

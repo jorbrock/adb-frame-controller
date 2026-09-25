@@ -223,7 +223,7 @@ class RegistryTests(unittest.TestCase):
             dict(component="different.package/.Activity"), dict(wake="25:00"),
             dict(wake="22:00"), dict(day_brightness=256), dict(day_brightness=True),
             dict(boot_delay_seconds=-1), dict(night_recheck_seconds=29),
-            dict(morning_action="anything"), dict(package=None),
+            dict(morning_action="anything"), dict(night_action="anything"), dict(package=None),
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.change("living-room", {**original["frames"][0], **changes})
@@ -364,6 +364,23 @@ class ConfigurationWebTests(unittest.TestCase):
 
     def form(self, **changes):
         return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, "enabled": "true", **changes}
+
+    def test_http_action_settings_round_trip(self):
+        self.assertEqual(self.registry.frames["living-room"].cfg["night_action"], "stop_app")
+        response = self.client.post("/frames/living-room/edit", data=self.form(
+            morning_action="undim", night_action="dim"))
+        self.assertEqual(response.status_code, 303)
+        restored = c.FrameRegistry({
+            **self.config, "frames": c.read_json(self.data / "frames.json", [])}, self.data)
+        frame = restored.frames["living-room"]
+        self.assertEqual(frame.cfg["morning_action"], "undim")
+        self.assertEqual(frame.cfg["night_action"], "dim")
+        page = self.client.get("/frames/living-room/edit").data
+        self.assertIn(b'value="dim" selected', page)
+        self.assertIn(b'value="undim" selected', page)
+        response = self.client.post("/frames/living-room/edit", data=self.form(night_action="invalid"))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.registry.frames["living-room"].cfg["night_action"], "dim")
 
     def test_root_checkbox_add_edit_and_validation_error(self):
         for path in ("/frames/new", "/frames/living-room/edit"):

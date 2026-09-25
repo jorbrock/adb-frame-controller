@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add a per-frame night action to dim through ImmichFrame's HTTP remote control
+  while keeping the app open. The default remains stop app and dim via ADB.
+- Add an HTTP undim morning action that skips reboot, app restart, and cache trim.
+  HTTP commands use the frame's hostname on port 53287 and retry failures.
+
+
 ## v1.5.1
 
 - Add an optional **Run as root** setting per frame, disabled by default. When
