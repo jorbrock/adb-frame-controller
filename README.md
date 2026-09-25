@@ -1,4 +1,4 @@
-# ADB Frame Controller v1.5.1
+# ADB Frame Controller v1.6.0
 
 A small Python + ADB container with a local web interface that stops ImmichFrame and sets screen brightness to zero
 at night, then reboots and explicitly launches the app each morning. It operates
@@ -276,7 +276,7 @@ These commands require appropriate host permissions:
 mkdir -p /mnt/tank/apps/frame-controller/data
 chown 3019:3019 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
-docker build -t frame-controller:1.5.1 .
+docker build -t frame-controller:1.6.0 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
@@ -361,7 +361,7 @@ If an older image reports `python: can't open file '/app/controller.py':
 [Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
 
 ```bash
-docker build --no-cache -t frame-controller:1.5.1 .
+docker build --no-cache -t frame-controller:1.6.0 .
 ```
 
 Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
@@ -370,7 +370,7 @@ does not replace its image. You can check the rebuilt image without starting any
 frame workers or mounting the data volume:
 
 ```bash
-docker run --rm --user 3019:3019 --entrypoint python frame-controller:1.5.1 -c "import controller, webui; print('Application readable')"
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:1.6.0 -c "import controller, webui; print('Application readable')"
 ```
 
 The host data dataset separately needs read/write access for UID/GID `3019:3019`,

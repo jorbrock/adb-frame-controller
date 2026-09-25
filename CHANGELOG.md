@@ -1,18 +1,28 @@
 # Changelog
 
-## Unreleased
-
-- Exit stuck boot animations after Android reports boot completion during scheduled
-  and manual reboots, before the configured boot delay and app launch.
-
-- Make individual and all-frame Wake/Sleep controls follow each frame's HTTP
-  undim/dim settings, retaining ADB app launch/stop for other action settings.
+## v1.6.0
 
 - Add a per-frame night action to dim through ImmichFrame's HTTP remote control
   while keeping the app open. The default remains stop app and dim via ADB.
 - Add an HTTP undim morning action that skips reboot, app restart, and cache trim.
   HTTP commands use the frame's hostname on port 53287 and retry failures.
+- Make individual and all-frame Wake/Sleep controls follow each frame's HTTP
+  undim/dim settings, retaining ADB app launch/stop for other action settings.
+- Send `setprop service.bootanim.exit 1` after Android reports boot completion
+  during scheduled and manual reboots, before the configured boot delay and app
+  launch. Failed commands retry without issuing another reboot.
+- Suppress repeated Morning sequence completed log entries on scheduler ticks
+  and controller restarts while continuing to refresh the status timestamp.
 
+### Upgrade
+
+Build the `frame-controller:1.6.0` image and recreate the service using the updated
+Compose file. Preserve the data volume to retain frame settings, credentials, ADB
+keys, controller state, and log history. No settings migration is required.
+Existing morning and night actions retain their defaults. To use HTTP dim/undim,
+select those actions in frame settings and ensure ImmichFrame is running and
+reachable on port 53287. Pair HTTP undim with HTTP dim; undim cannot start a
+stopped app.
 
 ## v1.5.1
 
