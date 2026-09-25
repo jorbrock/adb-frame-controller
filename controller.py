@@ -313,6 +313,8 @@ class Frame:
             raise RuntimeError("Waiting for Android boot completion")
         # Delay after observing completed boot, persisted across container restarts.
         if self.state.get("ready_window") != token or "ready_at" not in self.state:
+            if self.cfg["morning_action"] == "reboot":
+                self.adb.shell("setprop", "service.bootanim.exit", "1")
             self.state.update(ready_window=token,
                               ready_at=time.time() + self.cfg["boot_delay_seconds"])
             self.save()
@@ -499,6 +501,7 @@ class Frame:
             if self.adb.shell("getprop", "sys.boot_completed") != "1":
                 raise RuntimeError("Waiting for Android to finish booting")
             if job.get("ready_boot_id") != boot_id:
+                self.adb.shell("setprop", "service.bootanim.exit", "1")
                 job.update(phase="starting", ready_boot_id=boot_id,
                            ready_at=time.time() + self.cfg["boot_delay_seconds"],
                            message="Android is ready; allowing the frame to settle")

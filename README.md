@@ -164,7 +164,9 @@ controller is stopped, or add the frames through the web UI.
   command. Reported failures retry; a completed trim is persisted per wake window
   so launch retries and controller restarts do not repeat it. Manual Reset app also runs this cleanup on demand.
 - In reboot mode: one reboot attempt per wake window, reconnect, confirm the
-  kernel boot ID changed, wait for `sys.boot_completed=1`, allow an additional
+  kernel boot ID changed, wait for `sys.boot_completed=1`, then send
+  `setprop service.bootanim.exit 1` to dismiss a stuck boot animation (also applied
+  to manual reboots). Allow an additional
   60 seconds, wake the screen with keycode 224, set manual brightness to
   `day_brightness` (default `128`, configurable per frame from `1` to `255`),
   then explicitly launch the app. Daytime manual reboots restore this brightness too.

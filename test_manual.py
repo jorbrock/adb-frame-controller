@@ -30,6 +30,36 @@ class ManualTests(unittest.TestCase):
         frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
         return frame
 
+    def test_reboot_exits_animation_after_boot_before_delay(self):
+        self.cfg["boot_delay_seconds"] = 60
+        frame = self.frame()
+        frame.request_reboot("a" * 32)
+        frame.tick()
+        exit_animation = call("setprop", "service.bootanim.exit", "1")
+        self.assertNotIn(exit_animation, frame.adb.shell.call_args_list)
+        frame.adb.boot_id.return_value = "new-boot"
+        frame.adb.shell.side_effect = None
+        frame.adb.shell.return_value = "0"
+        with self.assertLogs(c.LOG, level="WARNING"):
+            frame.tick()
+        self.assertNotIn(exit_animation, frame.adb.shell.call_args_list)
+        frame.adb.shell.side_effect = ["1", RuntimeError("setprop failed")]
+        with self.assertLogs(c.LOG, level="WARNING"):
+            frame.tick()
+        self.assertNotIn("ready_boot_id", frame.state["manual"])
+        frame.adb.shell.reset_mock()
+        frame.adb.shell.side_effect = None
+        frame.adb.shell.return_value = "1"
+        frame.tick()
+        self.assertEqual(frame.adb.shell.call_args_list, [
+            call("getprop", "sys.boot_completed"), exit_animation])
+        self.assertEqual(frame.state["manual"]["phase"], "starting")
+        recovered = self.frame()
+        recovered.adb.boot_id.return_value = "new-boot"
+        recovered.tick()
+        self.assertNotIn(exit_animation, recovered.adb.shell.call_args_list)
+        recovered.adb.run.assert_not_called()
+
     def test_reboot_relaunch_no_scheduled_second_reboot(self):
         frame = self.frame()
         frame.request_reboot("a" * 32)

@@ -102,6 +102,33 @@ class RecoveryTests(unittest.TestCase):
             recovered.tick()
         recovered.adb.run.assert_not_called()
 
+    def test_reboot_exits_animation_only_after_boot_and_retries_failure(self):
+        frame = self.frame()
+        frame.tick()
+        exit_animation = call("setprop", "service.bootanim.exit", "1")
+        self.assertNotIn(exit_animation, frame.adb.shell.call_args_list)
+        frame.adb.boot_id.return_value = "new-boot"
+        frame.adb.shell.return_value = "0"
+        with self.assertRaisesRegex(RuntimeError, "Android boot completion"):
+            frame.tick()
+        self.assertNotIn(exit_animation, frame.adb.shell.call_args_list)
+        frame.adb.shell.side_effect = ["1", RuntimeError("setprop failed")]
+        with self.assertRaisesRegex(RuntimeError, "setprop failed"):
+            frame.tick()
+        self.assertNotIn("ready_at", frame.state)
+        self.assertNotIn("completed_window", frame.state)
+        recovered = self.frame()
+        recovered.adb.boot_id.return_value = "new-boot"
+        recovered.adb.shell.side_effect = lambda *args, **kwargs: (
+            "Status: ok" if args[:2] == ("am", "start") else "1")
+        recovered.tick()
+        calls = recovered.adb.shell.call_args_list
+        self.assertLess(calls.index(call("getprop", "sys.boot_completed")), calls.index(exit_animation))
+        self.assertLess(calls.index(exit_animation), calls.index(
+            call("am", "start", "-W", "-n", self.cfg["component"])))
+        recovered.adb.run.assert_not_called()
+        self.assertIn("completed_window", recovered.state)
+
     def test_reboot_then_launch_once(self):
         frame = self.frame()
         frame.tick()
@@ -314,6 +341,8 @@ class RecoveryTests(unittest.TestCase):
         frame.adb.run.assert_not_called()
         frame.adb.boot_id.assert_not_called()
         self.assertIn("completed_window", frame.state)
+        self.assertNotIn(call("setprop", "service.bootanim.exit", "1"),
+                         frame.adb.shell.call_args_list)
 
 
 if __name__ == "__main__":
