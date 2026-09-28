@@ -151,19 +151,27 @@ def create_app(config, registry, data):
         token = request.form.get("request_id", "")
         if not re.fullmatch(r"[0-9a-f]{32}", token):
             abort(400, "Invalid request ID")
+        mode = request.form.get("mode", "soft")
+        if mode not in ("soft", "hard"):
+            abort(400, "Reboot mode must be soft or hard")
         try:
-            registry.request_reboot(name, token)
+            registry.request_reboot(name, token, mode)
         except KeyError:
             abort(404)
         except RuntimeError as exc:
             flash(str(exc), "error")
+        except OSError:
+            app.logger.exception("Cannot save reboot request")
+            flash("Could not save the request. Check the data directory and try again.", "error")
         else:
-            flash(f"Reboot requested for {name}. Progress will appear below.", "success")
+            flash(f"{mode.capitalize()} reboot requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
 
     @app.post("/frames/<name>/wake", defaults={"action": "wake"})
     @app.post("/frames/<name>/sleep", defaults={"action": "sleep"})
     @app.post("/frames/<name>/reset_app", defaults={"action": "reset_app"})
+    @app.post("/frames/<name>/power_on", defaults={"action": "power_on"})
+    @app.post("/frames/<name>/power_off", defaults={"action": "power_off"})
     def display_action(name, action):
         token = request.form.get("request_id", "")
         if not re.fullmatch(r"[0-9a-f]{32}", token):
@@ -233,6 +241,7 @@ def create_app(config, registry, data):
             for field in ("name", "address", "package", "component", "wake", "sleep", "morning_action",
                           "day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
                 values[field] = request.form.get(field, "").strip()
+            values["wyze_mac"] = request.form.get("wyze_mac", values.get("wyze_mac", "")).strip()
             values["night_action"] = request.form.get("night_action", values.get("night_action", "stop_app")).strip()
             enabled = request.form.get("enabled", "true")
             values["enabled"] = enabled == "true"

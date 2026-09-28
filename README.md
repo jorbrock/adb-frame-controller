@@ -6,7 +6,7 @@ independently of Immich, ImmichFrame's server, and Immich Kiosk; no Immich API k
 or changes to those containers are required.
 
 This is generated source code, not a published container image. The local logic
-tests use mocked ADB; actual Frameo firmware behavior must be tested on your devices.
+tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior must be tested on your devices.
 
 ### Web behavior and local login
 
@@ -15,11 +15,11 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
   **Remove** to manage up to 50 frames without restarting the controller.
 - Set **Frame management** to **Disabled** in a frame's settings to preserve its
   configuration while stopping all ADB commands and device status checks. Manual
-  controls are disabled and all-frame actions skip it. Pending manual requests are
+  controls are disabled and all-frame actions skip it. Pending display requests are
   cancelled and manual wake/sleep holds are cleared. The frame keeps its current
   display state. Re-enable management to resume normal operation with its existing
-  morning/reboot history. Existing frames default to Enabled.
-- Frame forms cover name, ADB address, optional Run as root, app package/activity, wake/sleep times,
+  morning/reboot history. Finish any active power action before disabling management. Existing frames default to Enabled.
+- Frame forms cover name, ADB address, optional Wyze plug MAC and Run as root, app package/activity, wake/sleep times,
   morning action, day brightness, boot delay, and night recheck interval.
   Removal requires a confirmation page. Empty configurations are supported.
 - Settings are validated before saving. Busy frames and active manual actions
@@ -40,13 +40,15 @@ tests use mocked ADB; actual Frameo firmware behavior must be tested on your dev
 - Repeated submissions of the most recent request are ignored. Busy frames reject new
   requests, and there is a two-minute cooldown between manual reboot requests.
   A frame briefly busy doing scheduled work may ask you to try again shortly.
-- Manual jobs persist across container restarts and have a 15-minute timeout.
+- Manual jobs persist across container restarts and normally have a 15-minute timeout.
+  Hard reboot keeps retrying power restoration until it succeeds; the Android boot
+  timeout starts after power is restored.
   Wake/sleep connections and commands also retry within this timeout; pending
   wake/sleep requests are cancelled if their schedule boundary passes first.
   The actual reboot command is sent at most once per request. A successful manual
   reboot that launches the app also fulfills the current morning window.
 - A failure is shown in the frame's card. You can request another action after
-  the pending job finishes or times out. An unchanged boot ID is never considered
+  the pending job finishes or times out. For soft reboot, an unchanged boot ID is never considered
   a successful reboot. These statuses do not detect stalled photo progression.
 - One username/password account, with a salted password hash stored in
   `/data/web-auth.json`. Sessions expire after 12 hours and are invalidated when
@@ -82,6 +84,67 @@ Changing a frame's settings does not change an existing override's saved expiry;
 issue a new manual action to replace it. Retrying the same submitted form does
 not extend the hold. An override records the requested mode; check the action
 result for connection or command failures.
+
+### Wyze plug power and hard reboot
+
+Pair each smart plug with your account in the Wyze app first. In **Edit settings**,
+enter its **Plug device MAC** (`wyze_mac` in `frames.json`). Use the plug's MAC,
+not the frame's network MAC. Both 12- and 16-digit hexadecimal device MACs are
+accepted; colons, dashes and letter case are normalized. A plug can be assigned
+to only one frame. Leave the field empty for frames without a plug.
+
+The dropdown attached to **Reboot frame** selects **Soft (ADB)**, the default,
+or **Hard (plug, 30s off)**. Soft reboot keeps using ADB. Hard reboot sends a Wyze
+power-off command without needing ADB, waits at least 30 seconds after the call
+finishes, then turns the plug back on. The worker checks every five seconds, so
+restoration may take a few seconds longer. Both modes wait for Android boot and
+the configured boot delay, then restore the scheduled display mode or active
+manual override. Scheduled morning reboots continue to use ADB.
+
+**Power off** switches off the plug, clears manual wake/sleep holds, and pauses
+all frame monitoring, scheduled work, and display commands. All-frame Wake/Sleep
+skip powered-off frames. This pause survives container restarts and schedule
+boundaries. **Power on** restores plug power, waits for Android, and applies the
+current schedule (or launches the slideshow when scheduling is paused), without
+sending another reboot. Frame management must be enabled to use power controls.
+
+Power state shown in the UI is the last controller command, not a live electrical
+measurement. The controller does not poll Wyze while a frame is powered off or
+track changes made using the Wyze app, plug button, or Wyze schedules. Use these
+controller controls to keep the pause state synchronized; select **Power on** here
+after restoring power elsewhere. A failed/ambiguous off request is shown as
+unknown power and also pauses device commands until power is restored.
+
+Hard reboot's power restoration is journaled before switching off. If the
+controller restarts during the wait, it allows a fresh 30 seconds before restoring
+power and does not send another off command. If the off request fails or its
+response is lost, the controller still attempts to restore power, then reports
+that the hard reboot was not confirmed. Failed power-on attempts during hard
+reboot continue retrying, even beyond the normal job timeout. Other actions and
+settings changes remain blocked while the cycle is active. The controller must
+be running and Wyze reachable to restore power; an outage can extend the off time.
+
+The integration uses [wyze-sdk](https://github.com/shauntarves/wyze-sdk) and requires
+internet access to Wyze. Set credentials in the `environment:` block of
+`docker-compose.yaml`, or supply the included substitutions through Compose's
+`.env` file:
+
+| Variable | Purpose |
+| --- | --- |
+| `WYZE_EMAIL` | Wyze account email. |
+| `WYZE_PASSWORD` | Wyze account password. |
+| `WYZE_KEY_ID` | API key ID from the [Wyze developer portal](https://developer-api-console.wyze.com/#/apikey/view). |
+| `WYZE_API_KEY` | API key from the same portal. |
+| `WYZE_TOTP_KEY` | Optional authenticator setup secret for accounts using TOTP MFA. Interactive SMS/email MFA is unsupported. |
+| `WYZE_ACCESS_TOKEN` | Alternative to email/password/API credentials; takes precedence when set. |
+| `WYZE_REFRESH_TOKEN` | Refresh token accompanying the access token, required for automatic renewal in token mode. |
+
+The SDK session is shared across frames and reused; expired access tokens are
+refreshed. Login errors back off for one minute. Credentials and tokens remain
+in the environment and SDK memory, not frame settings or frame logs. Without
+Wyze credentials, ordinary ADB operation remains available. Rebuild the image
+with the updated requirements and recreate the container after configuring the
+variables. No frame settings migration is required.
 
 ### Saving frame settings
 

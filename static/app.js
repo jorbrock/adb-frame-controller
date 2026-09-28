@@ -7,6 +7,9 @@ document.querySelectorAll('.reboot-form').forEach(form => {
     event.preventDefault();
     pendingForm = form;
     document.querySelector('#reboot-name').textContent = form.dataset.frame;
+    document.querySelector('#reboot-method').textContent = form.elements.mode.value === 'hard'
+      ? 'Hard reboot: switch the Wyze plug off for 30 seconds, then restore power.'
+      : 'Soft reboot: restart Android using ADB.';
     dialog.showModal();
   });
 });
@@ -27,7 +30,7 @@ document.querySelectorAll('time[datetime]').forEach(element => {
 if (document.querySelector('[data-refresh]')) {
   setInterval(() => {
     if (!dialog?.open && !submitting && !document.hidden &&
-        !['BUTTON', 'INPUT'].includes(document.activeElement?.tagName)) {
+        !['BUTTON', 'INPUT', 'SELECT'].includes(document.activeElement?.tagName)) {
       window.location.reload();
     }
   }, 10000);

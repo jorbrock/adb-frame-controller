@@ -365,6 +365,18 @@ class ConfigurationWebTests(unittest.TestCase):
     def form(self, **changes):
         return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, "enabled": "true", **changes}
 
+    def test_wyze_pairing_round_trip_and_validation(self):
+        response = self.client.post("/frames/living-room/edit", data=self.form(wyze_mac="aa:bb:cc:dd:ee:ff"))
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(json.loads((self.data / "frames.json").read_text())[0]["wyze_mac"], "AABBCCDDEEFF")
+        self.assertIn(b'value="AABBCCDDEEFF"', self.client.get("/frames/living-room/edit").data)
+        response = self.client.post("/frames/living-room/edit", data=self.form(wyze_mac="invalid"))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.registry.frames["living-room"].cfg["wyze_mac"], "AABBCCDDEEFF")
+        response = self.client.post("/frames/living-room/edit", data=self.form(wyze_mac=""))
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(self.registry.frames["living-room"].cfg["wyze_mac"], "")
+
     def test_http_action_settings_round_trip(self):
         self.assertEqual(self.registry.frames["living-room"].cfg["night_action"], "stop_app")
         response = self.client.post("/frames/living-room/edit", data=self.form(

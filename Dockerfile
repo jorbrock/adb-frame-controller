@@ -6,7 +6,7 @@ ENV HOME=/data PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
-COPY controller.py webui.py frame_log.py /app/
+COPY controller.py webui.py frame_log.py wyze_power.py /app/
 COPY templates /app/templates
 COPY static /app/static
 # NAS source files may have restrictive modes; the runtime user needs read/traverse access.

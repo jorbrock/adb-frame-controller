@@ -14,6 +14,15 @@ services:
       TZ: America/Los_Angeles
       WEB_ENABLED: "true"
       WEB_SECURE_COOKIE: "false"
+      # Optional Wyze plug control. Set these here or in a Compose .env file.
+      WYZE_EMAIL: "${WYZE_EMAIL:-}"
+      WYZE_PASSWORD: "${WYZE_PASSWORD:-}"
+      WYZE_KEY_ID: "${WYZE_KEY_ID:-}"
+      WYZE_API_KEY: "${WYZE_API_KEY:-}"
+      WYZE_TOTP_KEY: "${WYZE_TOTP_KEY:-}"
+      # Alternatively provide tokens (access token takes precedence).
+      WYZE_ACCESS_TOKEN: "${WYZE_ACCESS_TOKEN:-}"
+      WYZE_REFRESH_TOKEN: "${WYZE_REFRESH_TOKEN:-}"
     ports:
       - host_ip: 192.168.10.13
         mode: ingress

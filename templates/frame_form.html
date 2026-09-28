@@ -21,6 +21,9 @@
       <div class="field"><label for="component">Activity component</label><input id="component" name="component" value="{{ frame.component }}" required aria-describedby="component-help"><small id="component-help">Package/activity, for example com.immichframe.immichframe/.MainActivity.</small></div>
     </div>
   </fieldset>
+  <fieldset><legend>Wyze smart plug</legend>
+    <div class="field"><label for="wyze_mac">Plug device MAC (optional)</label><input id="wyze_mac" name="wyze_mac" value="{{ frame.get('wyze_mac', '') }}" placeholder="AABBCCDDEEFF" aria-describedby="wyze-help"><small id="wyze-help">Pair the plug in the Wyze app first, then enter its device MAC here. Enables power on/off and hard reboot. Configure Wyze account credentials in Docker Compose.</small></div>
+  </fieldset>
   <fieldset><legend>Schedule and display</legend>
     <p class="muted">Times use {{ timezone }}. Overnight schedules are supported; wake and sleep must differ.</p>
     <div class="settings-grid">

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Pair a Wyze smart plug to each frame by device MAC, with shared credentials
+  supplied through Docker Compose environment variables.
+- Add a Soft/Hard dropdown to Reboot frame. Hard reboot switches the plug off
+  for at least 30 seconds, restores power, then restores the display mode.
+- Add Power on/off controls. Powered-off or unknown-power frames pause monitoring,
+  scheduling and display commands across controller restarts.
+- Persist power-cycle recovery, prevent overlapping power operations, retry power
+  restoration, and bound SDK network calls and unattended authentication.
+
+Rebuild the image and recreate the container to install `wyze-sdk==2.3.8`.
+Existing frames retain ADB-only behavior until a Wyze plug MAC is configured.
+
 ## v1.6.0
 
 - Add a per-frame night action to dim through ImmichFrame's HTTP remote control

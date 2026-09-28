@@ -3,6 +3,7 @@ import argparse
 from copy import deepcopy
 import fcntl
 import frame_log
+from wyze_power import POWER, normalize_mac
 import json
 import logging
 import os
@@ -20,7 +21,9 @@ from urllib.request import urlopen
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
-ACTIVE_PHASES = ("queued", "rebooting", "starting")
+POWER_PHASES = ("power_off_pending", "power_wait", "power_on_pending")
+ACTIVE_PHASES = ("queued", "rebooting", "starting") + POWER_PHASES
+POWER_ACTIONS = ("hard_reboot", "power_on", "power_off")
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 
 
@@ -113,7 +116,7 @@ def validate_config(config):
     frames = config["frames"]
     if not isinstance(frames, list) or len(frames) > 50:
         raise ValueError("Configure 0 to 50 frames")
-    ids, addresses = set(), set()
+    ids, addresses, plugs = set(), set(), set()
     for frame in frames:
         if not isinstance(frame, dict):
             raise ValueError("Each frame must be an object")
@@ -126,6 +129,11 @@ def validate_config(config):
         frame.setdefault("run_as_root", False)
         if type(frame["run_as_root"]) is not bool:
             raise ValueError("Frame run_as_root must be a boolean")
+        frame["wyze_mac"] = normalize_mac(frame.get("wyze_mac", ""))
+        if frame["wyze_mac"]:
+            if frame["wyze_mac"] in plugs:
+                raise ValueError("Each Wyze plug MAC can belong to only one frame")
+            plugs.add(frame["wyze_mac"])
         name = frame["name"]
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name in ids:
             raise ValueError("Frame names must be unique letters/numbers/underscore/dash")
@@ -208,6 +216,11 @@ class Frame:
         self.status_path = data / (config["name"] + ".status.json")
         self.log_path = data / (config["name"] + ".log.jsonl")
         self.state = read_json(self.path, {})
+        job = self.state.get("manual", {})
+        if job.get("action") == "hard_reboot" and job.get("phase") == "power_wait":
+            # A crash may have interrupted the off request. Allow a fresh 30s
+            # before restoring power; never send another off command on recovery.
+            job["power_on_at"] = max(job["power_on_at"], time.time() + 30)
         self.last_night = 0
         self.last_mode = None
         self.scheduled = scheduled
@@ -245,9 +258,18 @@ class Frame:
             return override
         return {}
 
+    def power_suspended(self, state=None):
+        return (self.state if state is None else state).get("power") in ("off", "unknown")
+
     def tick(self):
         if not self.cfg.get("enabled", True):
             return
+        job = self.state.get("manual", {})
+        if job.get("action") in POWER_ACTIONS and job.get("phase") in ACTIVE_PHASES:
+            self.manual_tick()
+            return
+        if self.power_suspended():
+            return  # No monitoring, schedule processing, or device commands while off.
         now = datetime.now(self.zone)
         if self.state.get("override") and not self.active_override(now):
             del self.state["override"]
@@ -379,11 +401,13 @@ class Frame:
         if re.search(r"error|exception|unable to resolve", output, re.I) or "Status: ok" not in output:
             raise RuntimeError(f"Application launch not confirmed: {output[:600]}")
 
-    def request_reboot(self, request_id):
-        self.request_action("reboot", request_id)
+    def request_reboot(self, request_id, mode="soft"):
+        if mode not in ("soft", "hard"):
+            raise ValueError("Reboot mode must be soft or hard")
+        self.request_action("hard_reboot" if mode == "hard" else "reboot", request_id)
 
     def request_action(self, action, request_id):
-        if action not in ("wake", "sleep", "reboot", "reset_app"):
+        if action not in ("wake", "sleep", "reboot", "reset_app") + POWER_ACTIONS:
             raise ValueError("Invalid manual action")
         # Never wait for ADB in a web request or let two actions overlap.
         if not self.mutex.acquire(blocking=False):
@@ -398,19 +422,23 @@ class Frame:
                 return  # Same browser request never renews an override.
             if old.get("phase") in ACTIVE_PHASES:
                 raise RuntimeError("A manual action is already in progress for this frame.")
+            if action in POWER_ACTIONS and not self.cfg.get("wyze_mac"):
+                raise RuntimeError("Pair a Wyze plug in frame settings first.")
+            if self.power_suspended() and action not in ("power_on", "power_off"):
+                raise RuntimeError("Frame power is off or unknown. Power it on first.")
             now = time.time()
             last_reboot = self.state.get("last_reboot_requested_at",
                 old.get("requested_at", 0) if old.get("action", "reboot") == "reboot" else 0)
-            if action == "reboot" and now - last_reboot < 120:
+            if action in ("reboot", "hard_reboot") and now - last_reboot < 120:
                 raise RuntimeError("Please wait two minutes between reboot requests.")
             previous = deepcopy(self.state)
-            self.state["manual"] = dict(id=request_id, action=action, phase="queued",
-                                        requested_at=now, message="Waiting to connect")
-            if action == "reboot":
+            self.state["manual"] = dict(
+                id=request_id, action=action, phase="queued", requested_at=now,
+                message="Waiting for plug" if action in POWER_ACTIONS else "Waiting to connect")
+            self.state["last_reboot_requested_at"] = last_reboot
+            if action in ("reboot", "hard_reboot"):
                 self.state["last_reboot_requested_at"] = now
-            else:
-                # Preserve legacy reboot cooldown even when a display action replaces its job.
-                self.state["last_reboot_requested_at"] = last_reboot
+            elif action not in POWER_ACTIONS:
                 self.state["override"] = dict(
                     mode="day" if action in ("wake", "reset_app") else "night",
                     expires_at=next_boundary(datetime.now(self.zone),
@@ -435,22 +463,27 @@ class Frame:
         if job.get("phase") not in ACTIVE_PHASES:
             return False
         action = job.get("action", "reboot")  # Jobs written before v1.2.0 are reboots.
-        if action != "reboot" and not self.active_override(datetime.now(self.zone)):
+        if action in ("wake", "sleep", "reset_app") and not self.active_override(datetime.now(self.zone)):
             job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
             self.save()
             return False
         # Bounded job, including unreachable frames. Never retry reboot itself.
-        if time.time() - job["requested_at"] > 900:
+        restoring_power = action == "hard_reboot" and job["phase"] in POWER_PHASES
+        if time.time() - job.get("powered_on_at", job["requested_at"]) > 900 and not restoring_power:
             job.update(phase="failed", message="Timed out after 15 minutes. Check frame connectivity and the configured action.")
             self.save()
             self.status(f"manual_{action}_failed", error=job["message"])
             return True
         try:
+            if action in POWER_ACTIONS and self.power_tick(job):
+                return True
+            if self.power_suspended():
+                return True
             http_wake = action == "wake" and self.cfg.get("morning_action") == "undim"
             http_sleep = action == "sleep" and self.cfg.get("night_action", "stop_app") == "dim"
             if not (http_wake or http_sleep):
                 self.adb.connect()
-            if action != "reboot":
+            if action in ("wake", "sleep", "reset_app"):
                 # A slow connection must not apply an override after its boundary.
                 if not self.active_override(datetime.now(self.zone)):
                     job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
@@ -486,7 +519,7 @@ class Frame:
                 LOG.info("%s: manual %s completed", self.cfg["name"], action)
                 return True
             boot_id = self.adb.boot_id()
-            if job["phase"] == "queued":
+            if action == "reboot" and job["phase"] == "queued":
                 job.update(phase="rebooting", previous_boot_id=boot_id,
                            message="Reboot requested; waiting for the frame")
                 mode, token = window(datetime.now(self.zone), self.cfg)
@@ -496,7 +529,7 @@ class Frame:
                 self.save()  # Journal before sending, just like the scheduled path.
                 self.adb.run("reboot", timeout=60)
                 return True
-            if boot_id == job["previous_boot_id"]:
+            if action == "reboot" and boot_id == job["previous_boot_id"]:
                 raise RuntimeError("Waiting for the frame to reboot; no duplicate reboot will be sent")
             if self.adb.shell("getprop", "sys.boot_completed") != "1":
                 raise RuntimeError("Waiting for Android to finish booting")
@@ -523,9 +556,15 @@ class Frame:
                 self.launch()
                 self.state["completed_window"] = token
                 message = "Reboot completed and ImmichFrame launched"
-            job.update(phase="completed", message=message, completed_at=time.time())
+            phase = "completed"
+            if action == "power_on":
+                message = message.replace("Reboot completed", "Power on completed")
+            if action == "hard_reboot" and not job.get("off_confirmed"):
+                phase = "failed"
+                message = "Power restored and display mode applied, but the plug off command was not confirmed; hard reboot may not have occurred."
+            job.update(phase=phase, message=message, completed_at=time.time())
             self.save()
-            self.status("manual_reboot_completed")
+            self.status(f"manual_{action}_{phase}")
             LOG.info("%s: %s", self.cfg["name"], message)
         except Exception as exc:
             job["message"] = str(exc)[:600]
@@ -533,6 +572,64 @@ class Frame:
             self.status(f"manual_{action}_waiting", error=job["message"])
             LOG.warning("%s manual %s: %s", self.cfg["name"], action, exc)
         return True
+
+    def power_tick(self, job):
+        """Advance a durable power operation without sleeping or needing ADB."""
+        action = job["action"]
+        if job["phase"] == "queued" and action == "hard_reboot":
+            self.state["power"] = "unknown"
+            job.update(phase="power_wait", power_on_at=time.time() + 30,
+                       message="Switching plug off; power will be restored after 30 seconds")
+            self.save()  # Never repeat the off command after an ambiguous response or crash.
+            try:
+                POWER.set_power(self.cfg["wyze_mac"], False)
+                self.state["power"] = "off"
+                job["off_confirmed"] = True
+                job["message"] = "Plug powered off; waiting 30 seconds before restoring power"
+            finally:
+                # Measure from command completion, including a failed/ambiguous response.
+                job["power_on_at"] = time.time() + 30
+                self.save()
+            self.status("hard_reboot_power_off")
+            return True
+        if job["phase"] == "queued":
+            job["phase"] = "power_on_pending" if action == "power_on" else "power_off_pending"
+            self.save()
+        if job["phase"] == "power_off_pending":
+            # A lost response can mean the plug switched off. Suspend all device
+            # work before sending, and safely repeat this idempotent command.
+            self.state["power"] = "unknown"
+            self.save()
+            POWER.set_power(self.cfg["wyze_mac"], False)
+            self.state["power"] = "off"
+            self.state.pop("override", None)
+            job.update(phase="completed", completed_at=time.time(),
+                       message="Plug powered off; monitoring and scheduling paused until power on.")
+            self.save()
+            self.status("powered_off")
+            return True
+        if job["phase"] == "power_wait":
+            if time.time() < job["power_on_at"]:
+                return True
+            job.update(phase="power_on_pending", message="Restoring plug power")
+            self.save()
+        if job["phase"] == "power_on_pending":
+            POWER.set_power(self.cfg["wyze_mac"], True)
+            self.state["power"] = "on"
+            job.update(phase="rebooting", powered_on_at=time.time(),
+                       message="Plug powered on; waiting for Android to boot")
+            # Power-up fulfills this morning's reboot attempt, even if ADB is slow.
+            mode, token = window(datetime.now(self.zone), self.cfg)
+            if mode == "day":
+                self.state.update(attempted_window=token, previous_boot_id=None)
+            self.state.pop("completed_window", None)
+            self.state.pop("ready_at", None)
+            self.last_mode = None
+            self.last_night = 0
+            self.save()
+            self.status("powered_on")
+            return True
+        return False
 
     def snapshot(self):
         # Atomic files keep page loads independent of slow ADB calls.
@@ -546,7 +643,9 @@ class Frame:
             display_override["until"] = datetime.fromtimestamp(override["expires_at"], self.zone).isoformat()
         return {**self.cfg, "mode": override.get("mode", window(now, self.cfg)[0]),
                 "status": status, "job": job, "override": display_override,
-                "busy": job.get("phase") in ACTIVE_PHASES}
+                "busy": job.get("phase") in ACTIVE_PHASES,
+                "power": state.get("power", "untracked"),
+                "power_suspended": self.power_suspended(state)}
 
     def work(self):
         while not STOP.is_set() and not self.stopped.is_set():
@@ -609,9 +708,12 @@ class FrameRegistry:
             finally:
                 frame.mutex.release()
 
-    def request_reboot(self, name, token):
+    def request_reboot(self, name, token, mode="soft"):
         with self.lock:
-            self.frames[name].request_reboot(token)
+            if mode == "soft":
+                self.frames[name].request_reboot(token)
+            else:
+                self.frames[name].request_reboot(token, mode)
 
     def request_action(self, name, action, token):
         with self.lock:
@@ -623,7 +725,7 @@ class FrameRegistry:
         accepted, errors = [], {}
         with self.lock:
             for name, frame in self.frames.items():
-                if not frame.cfg.get("enabled", True):
+                if not frame.cfg.get("enabled", True) or frame.power_suspended():
                     continue
                 try:
                     frame.request_action(action, token)
@@ -674,6 +776,13 @@ class FrameRegistry:
                 raise RuntimeError("Frame is busy. Try again shortly.")
             added = None
             try:
+                if frame is not None:
+                    job = frame.state.get("manual", {})
+                    if job.get("action") in POWER_ACTIONS and job.get("phase") in ACTIVE_PHASES:
+                        raise RuntimeError("Wait for the power action to finish before changing this frame.")
+                    if (cfg is not None and frame.power_suspended()
+                            and cfg.get("wyze_mac") != frame.cfg.get("wyze_mac")):
+                        raise RuntimeError("Power the frame on before changing or removing its Wyze plug pairing.")
                 if (frame is not None and frame.state.get("manual", {}).get("phase") in ACTIVE_PHASES
                         and (cfg is None or cfg.get("enabled", True))):
                     raise RuntimeError("Wait for the manual action to finish before editing or removing this frame.")

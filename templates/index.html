@@ -25,6 +25,7 @@
       <span class="badge {{ 'busy' if frame.busy else '' }}">
         {% if not frame.get('enabled', true) %}Management disabled
         {% elif frame.busy %}{{ frame.job.get('action', 'reboot')|replace('_', ' ')|capitalize }} in progress
+        {% elif frame.power_suspended %}{{ 'Powered off' if frame.power == 'off' else 'Power unknown' }}
         {% elif frame.override %}{{ 'Manual wake' if frame.override.mode == 'day' else 'Manual sleep' }}
         {% elif scheduled and frame.mode == 'night' %}Night schedule
         {% else %}Manual control ready{% endif %}
@@ -34,6 +35,8 @@
     <dl class="times"><div><dt>Wake</dt><dd>{{ frame.wake }}</dd></div><div><dt>Sleep</dt><dd>{{ frame.sleep }}</dd></div><div><dt>Boot delay</dt><dd>{{ frame.boot_delay_seconds }}s</dd></div></dl>
     <div class="frame-status">
       {% if not frame.get('enabled', true) %}<p class="muted">Management is disabled. No commands or status checks are running.</p>{% endif %}
+      {% if frame.power_suspended %}<p class="muted">Monitoring and scheduling are paused until power is restored.</p>{% endif %}
+      {% if frame.wyze_mac %}<p class="muted">Wyze plug: {{ frame.wyze_mac }} · {{ 'Power not yet controlled' if frame.power == 'untracked' else 'Last commanded power: ' ~ frame.power }}</p>{% endif %}
       <p class="eyebrow">LAST CONTROLLER RESULT</p>
       <p>{{ frame.status.get('result', 'No activity yet')|replace('_', ' ')|capitalize }}</p>
       {% if frame.status.get('error') %}<p class="error-detail">{{ frame.status.error }}</p>{% endif %}
@@ -53,7 +56,7 @@
       <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action=action) }}">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="request_id" value="{{ request_token() }}">
-        <button class="{{ 'primary' if action == 'wake' else 'quiet' }}" type="submit" {% if frame.busy or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
+        <button class="{{ 'primary' if action == 'wake' else 'quiet' }}" type="submit" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
       </form>
       {% endfor %}
     </div>
@@ -61,14 +64,31 @@
     <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action='reset_app') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="request_id" value="{{ request_token() }}">
-      <button class="quiet" type="submit" title="Stop ImmichFrame, clear device caches, and restart the app" {% if frame.busy or not frame.get('enabled', true) %}disabled{% endif %}>{{ 'Resetting…' if frame.busy and frame.job.get('action') == 'reset_app' else 'Reset app' }}</button>
+      <button class="quiet" type="submit" title="Stop ImmichFrame, clear device caches, and restart the app" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>{{ 'Resetting…' if frame.busy and frame.job.get('action') == 'reset_app' else 'Reset app' }}</button>
     </form>
     <form class="reboot-form" method="post" action="{{ url_for('reboot', name=frame.name) }}" data-frame="{{ frame.name }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="request_id" value="{{ request_token() }}">
-      <button class="reboot" type="submit" {% if frame.busy or not frame.get('enabled', true) %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy and frame.job.get('action', 'reboot') == 'reboot' else 'Reboot frame' }}</button>
+      <div class="reboot-control">
+      <select name="mode" aria-label="Reboot type for {{ frame.name }}" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>
+        <option value="soft">Soft (ADB)</option>
+        <option value="hard" {% if not frame.wyze_mac %}disabled{% endif %}>Hard (plug, 30s off)</option>
+      </select>
+      <button class="reboot" type="submit" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy and frame.job.get('action', 'reboot') in ('reboot', 'hard_reboot') else 'Reboot frame' }}</button>
+      </div>
     </form>
     </div>
+    {% if frame.wyze_mac %}
+    <div class="display-actions" role="group" aria-label="Plug power for {{ frame.name }}">
+      {% for action, label in [('power_on', 'Power on'), ('power_off', 'Power off')] %}
+      <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action=action) }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="request_id" value="{{ request_token() }}">
+        <button class="quiet" type="submit" {% if frame.busy or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
     <nav class="frame-actions" aria-label="Manage {{ frame.name }}">
       <a class="button quiet" href="{{ url_for('edit_frame', name=frame.name) }}">Edit settings</a>
       <a class="button quiet danger-text" href="{{ url_for('remove_frame', name=frame.name) }}">Remove</a>
@@ -81,6 +101,7 @@
 <p class="footnote">Results show controller actions; they do not confirm that photos are advancing. {% if scheduled %}Wake restores the app and brightness until the next scheduled sleep. Sleep stops the app and dims the display until the next scheduled wake.{% else %}Wake restores the app and brightness. Sleep stops the app and dims the display. Manual modes remain until changed while scheduling is paused.{% endif %} Reboots respect manual overrides.</p>
 <dialog id="reboot-dialog">
   <p class="eyebrow">RESTART DISPLAY</p><h2>Reboot <span id="reboot-name"></span>?</h2>
+  <p id="reboot-method"></p>
   <p>The display will briefly disconnect. The controller will wait for it to boot and then restore the slideshow or sleep mode, respecting manual overrides.</p>
   <div class="dialog-actions"><button id="cancel-reboot" class="quiet" type="button">Cancel</button><button id="confirm-reboot" class="primary" type="button">Reboot frame</button></div>
 </dialog>

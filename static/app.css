@@ -22,3 +22,5 @@
 .recovery-actions{margin-top:0;margin-bottom:0}.recovery-actions .reboot-form{margin-top:0;flex:1;min-width:0}
 
 .field .checkbox-label{display:flex;align-items:center;gap:8px}.field input[type="checkbox"]{width:auto;min-height:0;margin:0;accent-color:var(--green)}
+
+.reboot-control{display:flex;flex-direction:column;gap:6px}.reboot-control select{width:100%;min-height:34px;border:1px solid var(--line);border-radius:6px;background:white;padding:5px;font:inherit}.recovery-actions{align-items:flex-end}
