@@ -1,42 +1,50 @@
 # Changelog
 
-## Unreleased
-
-- Monitor awake frames every five minutes for missing/crashing/non-responsive
-  ImmichFrame processes and loss of foreground focus. Reset caches and relaunch,
-  verify recovery, then escalate to ADB reboot or Wyze power cycling when ADB is
-  unavailable. Reuse wake startup, respect sleep/disabled states, and preserve
-  recovery progress across controller restarts.
-
-- Replace the separate reboot selector and button with a single dropdown menu
-  for Soft reboot and Hard reboot, including keyboard navigation.
-- Hard reboot now shares Sleep's graceful Android shutdown attempts and fallback
-  before switching the Wyze plug off for 30 seconds and restoring power.
-
-- Replace scheduled and manual wake/sleep with Wyze power sequences. Sleep tries
-  Android shutdown three times with plug fallback; wake waits the boot delay and
-  tries ADB five times, 30 seconds apart, reporting errors after the third failure.
-- Clear the boot animation, restore brightness, and preserve ImmichFrame when it
-  already started as Home. Launch it only when absent.
-- Remove morning action, night action, and night recheck settings and behavior.
-  Retired JSON fields are ignored and removed on the next settings save.
-- Preserve schedule wake from nightly power-off, including after service restarts;
-  allow Wake all frames to include powered-off frames.
-
-
-## Unreleased
+## v2.0.0
 
 - Pair a Wyze smart plug to each frame by device MAC, with shared credentials
   supplied through Docker Compose environment variables.
-- Add a Soft/Hard dropdown to Reboot frame. Hard reboot switches the plug off
-  for at least 30 seconds, restores power, then restores the display mode.
-- Add Power on/off controls. Powered-off or unknown-power frames pause monitoring,
-  scheduling and display commands across controller restarts.
+- Replace scheduled and manual wake/sleep with Wyze power sequences. Sleep tries
+  Android shutdown up to three times, allows an accepted shutdown 30 seconds to
+  finish, then cuts plug power, with direct plug fallback when ADB is unavailable
+  or shutdown fails. Wake restores power, waits the boot delay, and tries ADB/startup
+  five times, 30 seconds apart, reporting errors after the third failure.
+- Clear the boot animation, restore brightness, and preserve ImmichFrame when it
+  already started as Home. Launch it only when absent.
+- Remove morning action, night action, and night recheck settings and behavior,
+  including the previous HTTP dim/undim options. Retired JSON fields are ignored
+  and removed on the next settings save.
+- Preserve scheduled wake from nightly power-off, including after service restarts;
+  allow all-frame Wake/Sleep controls to include powered-off frames.
+- Add Power on/off controls. Explicit Power off and unknown-power states pause
+  monitoring, scheduling, and display commands across controller restarts until
+  Power on or Wake. Ordinary Sleep still permits the next scheduled wake.
+- Add a single Reboot dropdown menu for Soft reboot and Hard reboot, with keyboard
+  navigation. Hard reboot shares Sleep's graceful shutdown and fallback, switches
+  the Wyze plug off for at least 30 seconds, then restores power and display mode.
 - Persist power-cycle recovery, prevent overlapping power operations, retry power
   restoration, and bound SDK network calls and unattended authentication.
+- Monitor awake frames every five minutes for missing, crashing, or non-responsive
+  ImmichFrame processes and loss of foreground focus. Reset caches and relaunch,
+  verify recovery, then escalate to ADB reboot or Wyze power cycling when ADB is
+  unavailable. Reuse wake startup, respect sleep/disabled states, and preserve
+  recovery progress across controller restarts. Monitoring does not detect stalled
+  photo progression.
 
-Rebuild the image and recreate the container to install `wyze-sdk==2.3.8`.
-Existing frames retain ADB-only behavior until a Wyze plug MAC is configured.
+### Upgrade
+
+Build the `frame-controller:2.0.0` image and recreate the service using the updated
+Compose file to install `wyze-sdk==2.3.8`. Preserve the data volume to retain frame
+settings, login credentials, ADB keys, controller state, and log history.
+
+**Wake and sleep now require a paired Wyze plug and configured Wyze credentials.**
+Set the shared credentials in Compose or its `.env` file and assign each frame its
+plug's device MAC in frame settings; see the README for credential options.
+Unpaired frames retain ADB app reset and soft reboot controls, but scheduled or
+manual wake/sleep reports a pairing error without sending device commands.
+Previous morning/night action and night recheck settings no longer apply and are
+removed on the next settings save. Configure plugs before resuming scheduled
+wake/sleep; the old ADB-only and HTTP dim/undim behavior is no longer available.
 
 ## v1.6.0
 
