@@ -27,6 +27,7 @@ POWER_ACTIONS = ("hard_reboot", "power_on", "power_off")
 PLUG_ACTIONS = POWER_ACTIONS + ("wake", "sleep")
 WAKE_ATTEMPTS = 5
 RETRY_SECONDS = 30
+HEALTH_INTERVAL_SECONDS = 300
 SHUTDOWN_ATTEMPTS = 3
 SHUTDOWN_GRACE_SECONDS = 30
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -282,14 +283,17 @@ class Frame:
         if self.manual_tick():
             return
         if self.schedule_paused() or self.active_override(datetime.now(self.zone)):
-            return  # Keep the latest success/error visible throughout an override.
+            self.health_tick()
+            return  # Preserve overrides while monitoring awake frames.
         if not self.scheduled:
-            if not self.state.get("manual"):
+            if not self.state.get("manual") and "next_health_check_at" not in self.state:
                 self.status("schedule_disabled")
+            self.health_tick()
             return
         action, expires_at = self.schedule_event(datetime.now(self.zone))
         event = [action, expires_at]
         if self.state.get("schedule_event") == event:
+            self.health_tick()
             return
         # Record the event before commands, including failures. No nightly rechecks
         # or endless wake retries; the next boundary creates a fresh operation.
@@ -319,6 +323,7 @@ class Frame:
             phase = "failed"
             message = "Power restored and display mode applied, but the plug off command was not confirmed; hard reboot may not have occurred."
         job.update(phase=phase, message=message, completed_at=time.time())
+        self.state["next_health_check_at"] = time.time() + HEALTH_INTERVAL_SECONDS
         if self.scheduled and job.get("source") != "scheduled":
             event = list(self.schedule_event(datetime.now(self.zone)))
             if event[0] == ("sleep" if self.power_suspended() else "wake"):
@@ -424,19 +429,8 @@ class Frame:
                 job.update(phase="cancelled", message="The next schedule event passed; wake cancelled.")
                 self.save()
                 return
-            self.adb.shell("setprop", "service.bootanim.exit", "1")
-            self.restore_brightness()
-            # pidof exits 1 when absent; a remote conditional distinguishes that
-            # normal result from an ADB transport failure. Match the main process.
-            running = self.adb.shell("sh", "-c", f'pidof {shlex.quote(self.cfg["package"])} || [ "$?" = 1 ]')
-            if self.job_expired(job):
-                job.update(phase="cancelled", message="The next schedule event passed; wake cancelled.")
-                self.save()
+            if not self.wake_startup(job):
                 return
-            if not running.strip():
-                self.start_app()
-            elif not re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", running.strip()):
-                raise RuntimeError("Cannot determine whether ImmichFrame is running")
             self.finish_job(job, "Wake completed; brightness restored and ImmichFrame running")
         except Exception as exc:
             attempts = job["connect_attempts"]
@@ -447,6 +441,190 @@ class Frame:
             self.save()
             self.job_status(job, "failed" if attempts == WAKE_ATTEMPTS else "waiting", error=job["message"])
             (LOG.error if attempts >= 3 else LOG.warning)("%s: %s", self.cfg["name"], job["message"])
+
+    def monitoring_awake(self):
+        if self.schedule_paused() or self.power_suspended():
+            return False
+        override = self.active_override(datetime.now(self.zone))
+        if override:
+            return override["mode"] == "day"
+        return not self.scheduled or self.schedule_event(datetime.now(self.zone))[0] == "wake"
+
+    def app_health(self):
+        """Return a fault, or None. Command/diagnostic failures raise separately."""
+        package = self.cfg["package"]
+        running = self.adb.shell("sh", "-c", f'pidof {shlex.quote(package)} || [ "$?" = 1 ]').strip()
+        if not running:
+            return "ImmichFrame process is missing"
+        if not re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", running):
+            raise RuntimeError("Cannot determine whether ImmichFrame is running")
+        processes = self.adb.shell("dumpsys", "activity", "processes", package)
+        # Inspect current process records, not historical ANR/crash summaries.
+        found_process = False
+        for record in re.split(r"(?m)(?=^[ \t]*\*APP\*)", processes):
+            if re.match(r"\s*\*APP\*[^\n]*ProcessRecord\{[^\n]*:" + re.escape(package) + r"(?:[:/])", record):
+                found_process = True
+                if re.search(r"\b(?:notResponding|crashing)\s*=\s*true\b", record):
+                    return "Android reports ImmichFrame crashing or not responding"
+        if not found_process:
+            raise RuntimeError("Android did not report the ImmichFrame process record")
+        windows = self.adb.shell("dumpsys", "window", "windows")
+        focus = re.findall(r"mCurrentFocus\s*=\s*([^\n]+)", windows)
+        if not focus:
+            raise RuntimeError("Android did not report the focused window")
+        if not any(re.search(r"(?:^|\s)" + re.escape(package) + r"/", value) for value in focus):
+            return "ImmichFrame is not the foreground app"
+        return None
+
+    def adb_responsive(self):
+        try:
+            self.adb.connect()
+            return self.adb.shell("echo", "frame-health") == "frame-health"
+        except Exception:
+            return False
+
+    def health_tick(self):
+        if not self.monitoring_awake():
+            return
+        if "next_health_check_at" not in self.state:
+            self.state["next_health_check_at"] = time.time() + HEALTH_INTERVAL_SECONDS
+            self.save()
+        if time.time() < self.state["next_health_check_at"]:
+            return
+        self.state["next_health_check_at"] = time.time() + HEALTH_INTERVAL_SECONDS
+        self.save()
+        try:
+            self.adb.connect()
+            fault = self.app_health()
+        except Exception as exc:
+            if self.adb_responsive():
+                self.status("monitoring_error", error=str(exc)[:600])
+                return  # Unsupported diagnostics are not proof of an app failure.
+            fault = f"ADB is unavailable: {str(exc)[:400]}"
+            action = "hard_reboot"
+        else:
+            if not fault:
+                self.status("monitoring_healthy")
+                return
+            action = "reset_app"
+        if not self.monitoring_awake():
+            return
+        job = dict(source="monitoring", action=action, phase="queued",
+                   requested_at=time.time(), message=fault)
+        self.state["manual"] = job
+        self.save()
+        self.job_status(job, "queued", error=fault)
+        self.recovery_tick(job)
+
+    def recovery_escalate(self, job, action, message):
+        # Replace stage-specific fields; retain the original diagnostic.
+        reason = job.get("reason", job["message"])
+        job.clear()
+        job.update(source="monitoring", action=action, phase="queued",
+                   requested_at=time.time(), reason=reason, message=message)
+        self.save()
+        self.job_status(job, "queued", error=message)
+
+    def recovery_tick(self, job):
+        """Bounded recovery, sharing the durable plug cycle and wake startup."""
+        action = job["action"]
+        restoring = action == "hard_reboot" and job["phase"] in POWER_PHASES
+        if not restoring and not self.monitoring_awake():
+            job.update(phase="cancelled", message="Frame should be asleep; recovery cancelled")
+            self.save()
+            return False
+        if time.time() < job.get("next_attempt_at", 0):
+            return True
+        try:
+            if action == "hard_reboot":
+                if not self.cfg.get("wyze_mac"):
+                    raise RuntimeError("ADB unavailable; pair a Wyze plug for automatic hard reboot")
+                if self.power_tick(job):
+                    return True
+            self.adb.connect()
+            if not self.monitoring_awake():
+                job.update(phase="cancelled", message="Frame should be asleep; recovery cancelled")
+                self.save()
+                return False
+            if action == "reset_app":
+                if job["phase"] == "queued":
+                    # Journal before issuing commands so a controller restart
+                    # cannot repeat a destructive reset indefinitely.
+                    job.update(phase="starting", next_attempt_at=time.time() + RETRY_SECONDS)
+                    self.save()
+                    self.trim_device_caches()
+                    if not self.monitoring_awake():
+                        return True
+                    self.launch()
+                    job.update(next_attempt_at=time.time() + RETRY_SECONDS,
+                               message="Cache reset and app launch completed; verifying in 30 seconds")
+                    self.save()
+                    self.job_status(job, "verifying")
+                    return True
+            elif job["phase"] == "queued":
+                boot_id = self.adb.boot_id()
+                job.update(phase="rebooting", previous_boot_id=boot_id,
+                           next_attempt_at=time.time() + self.cfg["boot_delay_seconds"])
+                self.state["last_reboot_requested_at"] = time.time()
+                self.save()
+                self.adb.run("reboot", timeout=60)
+                return True
+            elif not job.get("startup_done"):
+                if action == "reboot" and self.adb.boot_id() == job["previous_boot_id"]:
+                    raise RuntimeError("Waiting for the frame to reboot")
+                if self.adb.shell("getprop", "sys.boot_completed") != "1":
+                    raise RuntimeError("Waiting for Android to boot")
+                if time.time() < job.get("powered_on_at", 0) + self.cfg["boot_delay_seconds"]:
+                    return True
+                if not self.wake_startup(job, foreground=True):
+                    return False
+                job.update(startup_done=True, phase="starting",
+                           next_attempt_at=time.time() + RETRY_SECONDS)
+                self.save()
+                return True
+            fault = self.app_health()
+            if fault:
+                raise RuntimeError(fault)
+            self.finish_job(job, "ImmichFrame recovery verified: process healthy and app in foreground")
+        except Exception as exc:
+            message = str(exc)[:600]
+            if action == "reset_app":
+                self.recovery_escalate(job, "reboot" if self.adb_responsive() else "hard_reboot", message)
+            else:
+                job["attempts"] = job.get("attempts", 0) + 1
+                # Power restoration remains durable even after repeated outages.
+                restoring = action == "hard_reboot" and job["phase"] in POWER_PHASES
+                if job["attempts"] >= WAKE_ATTEMPTS and not restoring:
+                    if action == "reboot" and not self.adb_responsive():
+                        self.recovery_escalate(job, "hard_reboot", message)
+                    else:
+                        job.update(phase="failed", message=message, completed_at=time.time())
+                        self.state["next_health_check_at"] = time.time() + HEALTH_INTERVAL_SECONDS
+                        self.save()
+                        self.job_status(job, "failed", error=message)
+                else:
+                    job.update(next_attempt_at=max(job.get("next_attempt_at", 0),
+                                                   time.time() + RETRY_SECONDS), message=message)
+                    self.save()
+                    self.job_status(job, "waiting", error=message)
+        return True
+
+    def wake_startup(self, job, foreground=False):
+        self.adb.shell("setprop", "service.bootanim.exit", "1")
+        self.restore_brightness()
+        # pidof exits 1 when absent; distinguish this from transport failure.
+        running = self.adb.shell("sh", "-c", f'pidof {shlex.quote(self.cfg["package"])} || [ "$?" = 1 ]')
+        expired = (not self.monitoring_awake() if job.get("source") == "monitoring"
+                   else self.job_expired(job))
+        if expired:
+            job.update(phase="cancelled", message="The next schedule event passed; startup cancelled.")
+            self.save()
+            return False
+        if running.strip() and not re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", running.strip()):
+            raise RuntimeError("Cannot determine whether ImmichFrame is running")
+        if not running.strip() or foreground:
+            self.start_app()
+        return True
 
     def trim_device_caches(self):
         self.adb.shell("am", "force-stop", self.cfg["package"])
@@ -527,6 +705,8 @@ class Frame:
         job = self.state.get("manual", {})
         if job.get("phase") not in ACTIVE_PHASES:
             return False
+        if job.get("source") == "monitoring":
+            return self.recovery_tick(job)
         action = job.get("action", "reboot")  # Jobs written before v1.2.0 are reboots.
         if (action in ("wake", "sleep", "reset_app") and self.job_expired(job)
                 and job["phase"] not in SHUTDOWN_PHASES):
@@ -664,6 +844,8 @@ class Frame:
             job.update(phase="rebooting", powered_on_at=time.time(),
                        message="Plug powered on; waiting for Android to boot")
             self.state["power_paused"] = False
+            if job.get("source") == "monitoring":
+                job.update(next_attempt_at=time.time() + self.cfg["boot_delay_seconds"], attempts=0)
             # Boot recovery gets a fresh timeout after a potentially long outage.
             job.pop("shutdown_started_at", None)
             self.save()

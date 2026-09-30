@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Monitor awake frames every five minutes for missing/crashing/non-responsive
+  ImmichFrame processes and loss of foreground focus. Reset caches and relaunch,
+  verify recovery, then escalate to ADB reboot or Wyze power cycling when ADB is
+  unavailable. Reuse wake startup, respect sleep/disabled states, and preserve
+  recovery progress across controller restarts.
+
 - Replace the separate reboot selector and button with a single dropdown menu
   for Soft reboot and Hard reboot, including keyboard navigation.
 - Hard reboot now shares Sleep's graceful Android shutdown attempts and fallback

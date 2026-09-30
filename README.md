@@ -423,10 +423,37 @@ the scheduler is running; it does not mean every frame is reachable or advancing
 photos. Docker also does not restart a container merely because it is unhealthy.
 Wake failures have a five-attempt limit; process exit uses the restart policy.
 
-The controller does not monitor daytime slideshow progression. Nightly power cycles
-provide routine recovery. Use **Hard reboot** if ADB or Android becomes unresponsive;
-this requires a reachable Wyze plug. A failed soft reboot is never automatically
-reissued within the same request. Do not delete state to fix connection failures.
+While a managed frame should be awake, the controller polls it over ADB every five
+minutes, including during manual wake holds and with scheduling disabled. It checks
+the main ImmichFrame process, current Android crash/not-responding flags, and the
+focused window. Monitoring skips disabled frames, sleep windows/holds, powered-off
+or unknown-power frames, and frames with another operation in progress. The first
+check is five minutes after startup or a completed operation.
+
+A missing, crashing, non-responsive, or backgrounded app triggers force-stop,
+the same full device cache trim as **Reset app** (`pm trim-caches 999G`, retaining
+settings), and relaunch. After 30 seconds the controller verifies process health
+and foreground focus again. If recovery fails but ADB still works, it issues one
+soft reboot. If ADB is unavailable, it uses the paired Wyze plug for a hard reboot
+with 30 seconds off. An unreachable soft-rebooted frame also falls back to Wyze
+after five boot connection attempts spaced 30 seconds apart. Both reboot paths
+respect the configured boot delay, clear the boot animation, restore brightness,
+and use the scheduled wake startup routine, bringing ImmichFrame to the foreground
+and verifying it after 30 seconds.
+
+Recovery is journaled across controller restarts, serialized with other frame
+operations, and cancelled when sleep becomes due. An interrupted plug cycle always
+restores power before handing control back to the schedule. Power restoration is
+retried until it succeeds; other reboot recovery failures stop after five attempts
+and wait until the next five-minute poll. A reachable, paired Wyze plug is required
+for hard recovery. Progress and failures appear in the frame status and log.
+
+These checks detect Android-reported non-responsiveness, not a slideshow that
+silently stops advancing while its process and foreground window remain healthy.
+That requires an ImmichFrame heartbeat/progression signal. Unsupported Android
+diagnostic output is logged as a monitoring error rather than assumed healthy or
+used to trigger a reboot when basic ADB commands still work. Do not delete state
+to fix connection failures.
 
 Use **Wake frame** to turn on power and restore the display, or **Sleep frame** to
 shut down Android and cut plug power. **Wake all frames** and **Sleep all frames**

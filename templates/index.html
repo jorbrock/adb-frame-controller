@@ -50,7 +50,7 @@
     </div>
     {% endif %}
     {% if frame.job %}
-    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Scheduled ' if frame.job.get('source') == 'scheduled' else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|replace('_', ' ')|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
+    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Scheduled ' if frame.job.get('source') == 'scheduled' else 'Automatic recovery · ' if frame.job.get('source') == 'monitoring' else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|replace('_', ' ')|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
     {% endif %}
     <div class="display-actions">
       {% for action, label in [('wake', 'Wake frame'), ('sleep', 'Sleep frame')] %}

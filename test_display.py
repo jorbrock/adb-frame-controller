@@ -303,8 +303,10 @@ class DisplayTests(unittest.TestCase):
         self.wake()
         self.now = self.now.replace(day=19, hour=7)
         recovered = self.recover()
-        recovered.tick()
-        recovered.adb.connect.assert_not_called()
+        with patch.object(recovered, 'app_health', return_value=None) as health:
+            recovered.tick()
+        recovered.adb.connect.assert_called_once()
+        health.assert_called_once()
         self.POWER.set_power.assert_called_once()
         self.now = self.now.replace(hour=22)
         recovered.tick()
