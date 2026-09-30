@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replace the separate reboot selector and button with a single dropdown menu
+  for Soft reboot and Hard reboot, including keyboard navigation.
+- Hard reboot now shares Sleep's graceful Android shutdown attempts and fallback
+  before switching the Wyze plug off for 30 seconds and restoring power.
+
 - Replace scheduled and manual wake/sleep with Wyze power sequences. Sleep tries
   Android shutdown three times with plug fallback; wake waits the boot delay and
   tries ADB five times, 30 seconds apart, reporting errors after the third failure.

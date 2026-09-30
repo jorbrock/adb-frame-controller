@@ -23,4 +23,16 @@
 
 .field .checkbox-label{display:flex;align-items:center;gap:8px}.field input[type="checkbox"]{width:auto;min-height:0;margin:0;accent-color:var(--green)}
 
-.reboot-control{display:flex;flex-direction:column;gap:6px}.reboot-control select{width:100%;min-height:34px;border:1px solid var(--line);border-radius:6px;background:white;padding:5px;font:inherit}.recovery-actions{align-items:flex-end}
+/* Reboot actions share a single dropdown trigger. */
+.recovery-actions{align-items:flex-end}
+.reboot-form{position:relative}
+.reboot-toggle{justify-content:space-between;white-space:nowrap}
+.reboot .reboot-caret{margin-left:auto;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor}
+.reboot-toggle[aria-expanded="true"]{background:#e6efe1;border-color:#9fbaa6}
+.reboot-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:10;width:max(100%,240px);padding:6px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #18382a26}
+.reboot-menu[hidden]{display:none}
+.reboot-menu button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:10px 12px;text-align:left;background:transparent;color:var(--ink);border-radius:6px}
+.reboot-menu button+button{margin-top:4px;border-top:1px solid var(--line)}
+.reboot-menu button:hover:not(:disabled),.reboot-menu button:focus-visible{background:var(--soft)}
+.reboot-menu strong{font-size:13px;font-weight:650}
+.reboot-menu small{font-size:11px;font-weight:400;color:var(--muted)}

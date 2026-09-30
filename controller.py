@@ -327,10 +327,11 @@ class Frame:
         self.job_status(job, phase)
         LOG.info("%s: %s", self.cfg["name"], message)
 
-    def sleep_tick(self, job):
-        """Try Android shutdown at most three times, then cut plug power."""
+    def shutdown_tick(self, job):
+        """Return whether Android shutdown attempts and the grace period are done."""
         if job["phase"] not in SHUTDOWN_PHASES:
-            job.update(phase="shutting_down", shutdown_attempts=0, shutdown_started_at=time.time())
+            job.update(phase="shutting_down", shutdown_attempts=0, shutdown_started_at=time.time(),
+                       forced=False)
             self.state["power_paused"] = False
             self.save()
         if job["phase"] == "shutting_down":
@@ -379,7 +380,11 @@ class Frame:
                 return
             job["phase"] = "sleep_power_off"
             self.save()
-        if job["phase"] == "sleep_power_off":
+        return job["phase"] == "sleep_power_off"
+
+    def sleep_tick(self, job):
+        """Shut Android down, then leave plug power off until the next wake."""
+        if self.shutdown_tick(job):
             self.state.update(power="unknown", power_paused=False)
             self.save()
             POWER.set_power(self.cfg["wyze_mac"], False)
@@ -529,7 +534,9 @@ class Frame:
             self.save()
             return False
         # Bounded job, including unreachable frames. Never retry reboot itself.
-        restoring_power = action == "hard_reboot" and job["phase"] in POWER_PHASES
+        preparing_cycle = action == "hard_reboot" and "powered_on_at" not in job
+        restoring_power = action == "hard_reboot" and (
+            job["phase"] in POWER_PHASES or preparing_cycle and job["phase"] in SHUTDOWN_PHASES)
         connecting_wake = action == "wake" and job["phase"] == "boot_wait"
         started_at = job.get("shutdown_started_at", job.get("powered_on_at", job["requested_at"]))
         if time.time() - started_at > 900 and not restoring_power and not connecting_wake:
@@ -538,7 +545,7 @@ class Frame:
             self.job_status(job, "failed", error=job["message"])
             return True
         try:
-            if action in ("wake", "sleep") or job["phase"] in SHUTDOWN_PHASES:
+            if action in ("wake", "sleep") or (job["phase"] in SHUTDOWN_PHASES and not preparing_cycle):
                 if not self.cfg.get("wyze_mac"):
                     job.update(phase="failed", message="Pair a Wyze plug in frame settings to use wake and sleep.")
                     self.save()
@@ -610,9 +617,11 @@ class Frame:
         return True
 
     def power_tick(self, job):
-        """Advance a durable power operation without sleeping or needing ADB."""
+        """Advance a durable power operation, gracefully shutting down for a cycle."""
         action = job["action"]
-        if job["phase"] == "queued" and action == "hard_reboot":
+        if action == "hard_reboot" and job["phase"] in ("queued",) + SHUTDOWN_PHASES:
+            if not self.shutdown_tick(job):
+                return True
             self.state["power"] = "unknown"
             job.update(phase="power_wait", power_on_at=time.time() + 30,
                        message="Switching plug off; power will be restored after 30 seconds")
@@ -655,6 +664,8 @@ class Frame:
             job.update(phase="rebooting", powered_on_at=time.time(),
                        message="Plug powered on; waiting for Android to boot")
             self.state["power_paused"] = False
+            # Boot recovery gets a fresh timeout after a potentially long outage.
+            job.pop("shutdown_started_at", None)
             self.save()
             self.status("powered_on")
             return True

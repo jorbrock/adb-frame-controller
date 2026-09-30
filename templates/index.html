@@ -70,12 +70,13 @@
     <form class="reboot-form" method="post" action="{{ url_for('reboot', name=frame.name) }}" data-frame="{{ frame.name }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="request_id" value="{{ request_token() }}">
-      <div class="reboot-control">
-      <select name="mode" aria-label="Reboot type for {{ frame.name }}" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>
-        <option value="soft">Soft (ADB)</option>
-        <option value="hard" {% if not frame.wyze_mac %}disabled{% endif %}>Hard (plug, 30s off)</option>
-      </select>
-      <button class="reboot" type="submit" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}><span aria-hidden="true">↻</span> {{ 'Rebooting…' if frame.busy and frame.job.get('action', 'reboot') in ('reboot', 'hard_reboot') else 'Reboot frame' }}</button>
+      <input type="hidden" name="mode" value="soft">
+      <button class="reboot reboot-toggle" type="button" aria-label="Reboot frame {{ frame.name }}" aria-haspopup="menu" aria-expanded="false" aria-controls="reboot-menu-{{ frame.name }}" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>
+        {{ 'Rebooting…' if frame.busy and frame.job.get('action', 'reboot') in ('reboot', 'hard_reboot') else 'Reboot' }} <span class="reboot-caret" aria-hidden="true"></span>
+      </button>
+      <div class="reboot-menu" id="reboot-menu-{{ frame.name }}" role="menu" aria-label="Reboot {{ frame.name }}" hidden>
+        <button type="submit" role="menuitem" data-mode="soft" tabindex="-1" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}><strong>Soft reboot</strong><small>Restart Android via ADB</small></button>
+        <button type="submit" role="menuitem" data-mode="hard" tabindex="-1" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) or not frame.wyze_mac %}disabled{% endif %}><strong>Hard reboot</strong><small>{{ 'Shut down, then cycle plug power' if frame.wyze_mac else 'Pair a Wyze plug in settings' }}</small></button>
       </div>
     </form>
     </div>

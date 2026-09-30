@@ -58,49 +58,66 @@ class PowerTests(unittest.TestCase):
         restored.tick()
         self.POWER.set_power.assert_called_once()
 
-    def test_hard_reboot_requires_no_adb_and_waits_30_seconds(self):
+    def test_hard_reboot_shuts_down_then_cuts_power_for_30_seconds(self):
         frame = self.frame
         frame.request_reboot('a' * 32, 'hard')
         frame.tick()
-        frame.adb.connect.assert_not_called()
-        self.assertEqual(frame.state['manual']['phase'], 'power_wait')
+        frame.adb.shell.assert_called_once_with('svc', 'power', 'shutdown')
+        self.assertEqual(frame.state['manual']['phase'], 'shutdown_wait')
+        self.POWER.set_power.assert_not_called()
         self.time.return_value = 1029.99
         frame.tick()
-        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.POWER.set_power.assert_not_called()
         self.time.return_value = 1030
+        frame.tick()
+        self.assertEqual(frame.state['manual']['phase'], 'power_wait')
+        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.time.return_value = 1059.99
+        frame.tick()
+        self.POWER.set_power.assert_called_once()
+        self.time.return_value = 1060
         frame.tick()
         self.assertEqual(self.POWER.set_power.call_args_list, [call('AABBCCDDEEFF', False), call('AABBCCDDEEFF', True)])
         frame.tick()
         self.assertEqual(frame.state['manual']['phase'], 'completed')
         frame.tick()
-        frame.adb.run.assert_not_called()  # also suppresses a second scheduled reboot
+        frame.adb.run.assert_not_called()
         frame.adb.shell.assert_any_call('am', 'start', '-W', '-n', frame.cfg['component'])
 
-    def test_restart_during_power_cycle_does_not_repeat_off(self):
+    def test_restart_during_shutdown_and_power_cycle_does_not_repeat_commands(self):
         self.frame.request_reboot('a' * 32, 'hard')
         self.frame.tick()
         self.time.return_value = 1010
         frame = self.recover()
-        self.time.return_value = 1039
+        frame.tick()
+        frame.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_not_called()
+        self.time.return_value = 1030
+        frame.tick()
+        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.time.return_value = 1040
+        frame = self.recover()
+        self.time.return_value = 1069
         frame.tick()
         self.POWER.set_power.assert_called_once()
-        self.time.return_value = 1040
+        self.time.return_value = 1070
         frame.tick()
         self.assertEqual(self.POWER.set_power.call_args_list, [call('AABBCCDDEEFF', False), call('AABBCCDDEEFF', True)])
         frame = self.recover()
         frame.tick()
-        self.POWER.set_power.assert_called_with('AABBCCDDEEFF', True)
         self.assertEqual(self.POWER.set_power.call_count, 2)
         self.assertEqual(frame.state['manual']['phase'], 'completed')
 
     def test_ambiguous_off_failure_still_restores_power_without_repeating_off(self):
         self.POWER.set_power.side_effect = [PowerError('connection lost'), None]
         self.frame.request_reboot('a' * 32, 'hard')
+        self.frame.tick()
+        self.time.return_value = 1030
         with self.assertLogs(c.LOG, level='WARNING'):
             self.frame.tick()
         self.assertTrue(self.frame.power_suspended())
         self.assertEqual(self.frame.state['manual']['phase'], 'power_wait')
-        self.time.return_value = 1030
+        self.time.return_value = 1060
         self.frame.tick()
         self.assertEqual(self.POWER.set_power.call_args_list, [call('AABBCCDDEEFF', False), call('AABBCCDDEEFF', True)])
         self.assertFalse(self.frame.power_suspended())
@@ -110,6 +127,8 @@ class PowerTests(unittest.TestCase):
 
     def test_restore_retries_even_after_job_timeout_and_restart(self):
         self.frame.request_reboot('a' * 32, 'hard')
+        self.frame.tick()
+        self.time.return_value = 1030
         self.frame.tick()
         self.POWER.set_power.side_effect = PowerError('offline')
         self.time.return_value = 2000
@@ -154,18 +173,23 @@ class PowerTests(unittest.TestCase):
                 self.frame.tick()
         self.POWER.set_power.assert_not_called()
 
-    def test_hard_reboot_respects_night_mode(self):
+    def test_hard_reboot_respects_night_mode_without_repeating_power_cycle(self):
         self.datetime.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo('UTC'))
         self.frame.request_reboot('a' * 32, 'hard')
         self.frame.tick()
         self.time.return_value = 1030
         self.frame.tick()
-        self.frame.tick()
-        self.frame.adb.shell.assert_any_call('svc', 'power', 'shutdown')
         self.time.return_value = 1060
+        self.frame.tick()
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'shutdown_wait')
+        self.time.return_value = 1090
+        self.frame.tick()
         self.frame.tick()
         self.assertEqual(self.frame.state['power'], 'off')
         self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+        self.assertEqual(self.POWER.set_power.call_args_list, [
+            call('AABBCCDDEEFF', False), call('AABBCCDDEEFF', True), call('AABBCCDDEEFF', False)])
         self.assertFalse(any(x.args[:2] == ('am', 'start') for x in self.frame.adb.shell.call_args_list))
 
     def test_pairing_required_cooldown_and_overlapping_actions(self):
@@ -213,6 +237,63 @@ class PowerTests(unittest.TestCase):
         self.frame.tick()
         self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
         self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+
+    def test_hard_reboot_falls_back_when_adb_is_unresponsive(self):
+        self.frame.adb.connect.side_effect = RuntimeError('offline')
+        self.frame.request_reboot('a' * 32, 'hard')
+        self.frame.tick()
+        self.frame.adb.shell.assert_not_called()
+        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.assertEqual(self.frame.state['manual']['phase'], 'power_wait')
+        self.frame.adb.connect.side_effect = None
+        self.time.return_value = 1030
+        self.frame.tick()
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+
+    def test_hard_reboot_shutdown_attempt_limit_survives_restart(self):
+        self.frame.adb.shell.side_effect = RuntimeError('permission denied')
+        self.frame.request_reboot('a' * 32, 'hard')
+        for _ in range(2):
+            self.frame.tick()
+            self.POWER.set_power.assert_not_called()
+        restored = self.recover()
+        restored.adb.shell.side_effect = RuntimeError('permission denied')
+        restored.tick()
+        self.assertEqual(restored.state['manual']['shutdown_attempts'], 3)
+        self.assertTrue(restored.state['manual']['forced'])
+        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.assertEqual(restored.state['manual']['phase'], 'power_wait')
+
+    def test_recovery_after_shutdown_outage_still_completes_power_cycle(self):
+        self.frame.request_reboot('a' * 32, 'hard')
+        self.frame.tick()
+        self.time.return_value = 2000
+        restored = self.recover()
+        restored.tick()
+        restored.adb.connect.assert_not_called()
+        self.assertEqual(restored.state['manual']['phase'], 'power_wait')
+        self.time.return_value = 2030
+        restored.tick()
+        restored.tick()
+        self.assertEqual(restored.state['manual']['phase'], 'completed')
+
+    def test_off_interval_is_measured_after_slow_wyze_response(self):
+        self.frame.request_reboot('a' * 32, 'hard')
+        self.frame.tick()
+        self.time.return_value = 1030
+        def switch(mac, on):
+            if not on:
+                self.time.return_value = 1050
+        self.POWER.set_power.side_effect = switch
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['power_on_at'], 1080)
+        self.time.return_value = 1079
+        self.frame.tick()
+        self.POWER.set_power.assert_called_once()
+        self.time.return_value = 1080
+        self.frame.tick()
+        self.POWER.set_power.assert_called_with('AABBCCDDEEFF', True)
 
     def test_mac_validation_and_duplicates(self):
         self.assertEqual(normalize_mac(' aa:bb:cc:dd:ee:ff '), 'AABBCCDDEEFF')
@@ -325,7 +406,10 @@ class PowerWebTests(unittest.TestCase):
         self.frame.snapshot.return_value.update(wyze_mac='AABBCCDDEEFF', power='off', power_suspended=True, schedule_paused=True)
         response = self.client.get('/')
         self.assertIn(b'name="mode"', response.data)
-        self.assertIn(b'Hard (plug, 30s off)', response.data)
+        self.assertIn(b'Hard reboot', response.data)
+        self.assertIn(b'aria-haspopup="menu"', response.data)
+        self.assertIn(b'role="menuitem" data-mode="hard"', response.data)
+        self.assertNotIn(b'<select name="mode"', response.data)
         self.assertIn(b'Power on', response.data)
         self.assertIn(b'Power off', response.data)
         self.assertIn(b'Monitoring and scheduling are paused', response.data)

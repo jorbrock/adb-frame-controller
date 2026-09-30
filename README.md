@@ -96,13 +96,17 @@ to only one frame. Wake and sleep require a paired plug and configured Wyze
 credentials. Unpaired frames retain ADB reset/reboot controls; scheduled wake or
 sleep reports a pairing error without sending device commands.
 
-The dropdown attached to **Reboot frame** selects **Soft (ADB)**, the default,
-or **Hard (plug, 30s off)**. Soft reboot keeps using ADB. Hard reboot sends a Wyze
-power-off command without needing ADB, waits at least 30 seconds after the call
-finishes, then turns the plug back on. The worker checks every five seconds, so
-restoration may take a few seconds longer. Both modes wait for Android boot and
-the configured boot delay, then restore the scheduled display mode or active
-manual override. Scheduled wakes use the plug-based wake sequence below.
+Click the frame’s **Reboot** button to open a menu with **Soft reboot** and **Hard reboot**,
+then confirm the selected action. The menu supports arrow keys and Escape.
+Soft reboot restarts Android through ADB. Hard reboot uses the same graceful
+shutdown sequence as Sleep: try Android shutdown up to three times, with direct
+plug fallback if ADB is unavailable or shutdown fails. An accepted shutdown gets
+30 seconds to finish before power is cut. The plug then stays off for at least
+30 seconds, measured from the off command's completion, before power is restored.
+The worker checks every five seconds, so each wait may take a few seconds longer.
+Both reboot modes wait for Android boot and the configured boot delay, then restore
+the scheduled display mode or active manual override. Scheduled wakes use the
+plug-based wake sequence below.
 
 **Power off** switches off the plug, clears manual wake/sleep holds, and pauses
 automatic frame monitoring and scheduled work until **Power on** or **Wake**.
