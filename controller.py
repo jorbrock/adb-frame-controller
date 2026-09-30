@@ -17,13 +17,18 @@ import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from urllib.request import urlopen
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
 POWER_PHASES = ("power_off_pending", "power_wait", "power_on_pending")
-ACTIVE_PHASES = ("queued", "rebooting", "starting") + POWER_PHASES
+SHUTDOWN_PHASES = ("shutting_down", "shutdown_wait", "sleep_power_off")
+ACTIVE_PHASES = ("queued", "rebooting", "starting", "boot_wait") + POWER_PHASES + SHUTDOWN_PHASES
 POWER_ACTIONS = ("hard_reboot", "power_on", "power_off")
+PLUG_ACTIONS = POWER_ACTIONS + ("wake", "sleep")
+WAKE_ATTEMPTS = 5
+RETRY_SECONDS = 30
+SHUTDOWN_ATTEMPTS = 3
+SHUTDOWN_GRACE_SECONDS = 30
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 
 
@@ -152,16 +157,12 @@ def validate_config(config):
             raise ValueError("Component must belong to configured package")
         if minute(frame["wake"]) == minute(frame["sleep"]):
             raise ValueError("Wake and sleep must differ")
-        frame.setdefault("morning_action", "reboot")
-        if frame["morning_action"] not in ("reboot", "restart_app", "undim"):
-            raise ValueError("morning_action must be reboot, restart_app, or undim")
-        frame.setdefault("night_action", "stop_app")
-        if frame["night_action"] not in ("stop_app", "dim"):
-            raise ValueError("night_action must be stop_app or dim")
+        # Retired options are ignored on load and removed on the next settings save.
+        for key in ("morning_action", "night_action", "night_recheck_seconds"):
+            frame.pop(key, None)
         for key, default, low, high in (
             ("day_brightness", 128, 1, 255),
             ("boot_delay_seconds", 60, 0, 600),
-            ("night_recheck_seconds", 300, 30, 3600),
         ):
             frame.setdefault(key, default)
             if type(frame[key]) is not int or not low <= frame[key] <= high:
@@ -221,8 +222,6 @@ class Frame:
             # A crash may have interrupted the off request. Allow a fresh 30s
             # before restoring power; never send another off command on recovery.
             job["power_on_at"] = max(job["power_on_at"], time.time() + 30)
-        self.last_night = 0
-        self.last_mode = None
         self.scheduled = scheduled
         self.mutex = threading.Lock()
         self.wakeup = threading.Event()
@@ -242,7 +241,7 @@ class Frame:
         try:
             # These states are checked every cycle without sending device commands.
             # Refresh the status timestamp, but only log changes to these states.
-            unchanged_state = result in ("manual_wake_active", "morning_sequence_completed") and (
+            unchanged_state = result in ("manual_wake_active", "schedule_disabled") and (
                 {key: value for key, value in entry.items() if key != "updated_at"}
                 == {key: value for key, value in previous.items() if key != "updated_at"}
             )
@@ -261,145 +260,208 @@ class Frame:
     def power_suspended(self, state=None):
         return (self.state if state is None else state).get("power") in ("off", "unknown")
 
+    def schedule_paused(self, state=None):
+        state = self.state if state is None else state
+        # Older explicit Power off journals did not have a separate pause flag.
+        return state.get("power_paused", self.power_suspended(state))
+
+    def schedule_event(self, now):
+        # Compare actual instants so a repeated DST hour cannot undo an event
+        # that already happened in the first fold.
+        wake_at = next_boundary(now, self.cfg["wake"])
+        sleep_at = next_boundary(now, self.cfg["sleep"])
+        return ("sleep", wake_at) if wake_at < sleep_at else ("wake", sleep_at)
+
     def tick(self):
         if not self.cfg.get("enabled", True):
             return
-        job = self.state.get("manual", {})
-        if job.get("action") in POWER_ACTIONS and job.get("phase") in ACTIVE_PHASES:
-            self.manual_tick()
-            return
-        if self.power_suspended():
-            return  # No monitoring, schedule processing, or device commands while off.
         now = datetime.now(self.zone)
         if self.state.get("override") and not self.active_override(now):
             del self.state["override"]
             self.save()
-            self.last_mode = None
-            self.last_night = 0
         if self.manual_tick():
             return
-        now = datetime.now(self.zone)
-        override = self.active_override(now)
-        if override.get("mode") == "day":
-            self.status("manual_wake_active", mode="day")
-            return  # No night rechecks or morning reboots while held awake.
-        if not self.scheduled and not override:
-            self.status("schedule_disabled")
+        if self.schedule_paused() or self.active_override(datetime.now(self.zone)):
+            return  # Keep the latest success/error visible throughout an override.
+        if not self.scheduled:
+            if not self.state.get("manual"):
+                self.status("schedule_disabled")
             return
-        mode, token = window(now, self.cfg)
-        mode = override.get("mode", mode)
-        if mode != self.last_mode:
-            self.last_night = 0
-            self.last_mode = mode
-        if mode == "night":
-            if time.monotonic() - self.last_night < self.cfg["night_recheck_seconds"]:
-                return
-            if self.cfg.get("night_action", "stop_app") != "dim":
-                self.adb.connect()
-            self.night()
-            self.last_night = time.monotonic()
-            self.status("night_commands_sent", mode=mode)
-            LOG.info("%s: night action completed (%s)", self.cfg["name"],
-                     self.cfg.get("night_action", "stop_app"))
+        action, expires_at = self.schedule_event(datetime.now(self.zone))
+        event = [action, expires_at]
+        if self.state.get("schedule_event") == event:
             return
-        if self.state.get("completed_window") == token:
-            # No claim that a running process is still advancing photographs.
-            self.status("morning_sequence_completed", mode=mode)
-            return
-        if self.cfg["morning_action"] == "undim":
-            self.remote_command("undim")
-            self.state["completed_window"] = token
+        # Record the event before commands, including failures. No nightly rechecks
+        # or endless wake retries; the next boundary creates a fresh operation.
+        previous = deepcopy(self.state)
+        self.state["schedule_event"] = event
+        self.state["manual"] = dict(
+            action=action, source="scheduled", phase="queued", requested_at=time.time(),
+            expires_at=expires_at, message=f"Scheduled {action} queued")
+        try:
             self.save()
-            self.status("morning_sequence_completed", mode=mode)
-            LOG.info("%s: morning undim command completed", self.cfg["name"])
-            return
-        self.adb.connect()
-        if self.cfg["morning_action"] == "reboot":
-            boot_id = self.adb.boot_id()
-            if self.state.get("attempted_window") != token:
-                self.trim_morning_caches(token)
-                if window(datetime.now(self.zone), self.cfg) != (mode, token):
-                    return
-                # Journal BEFORE the command. A crash can skip a reboot but
-                # cannot repeatedly reboot a frame in the same wake window.
-                self.state.update(attempted_window=token, previous_boot_id=boot_id)
-                self.state.pop("ready_at", None)
-                self.save()
-                self.status("reboot_requested", mode=mode)
-                self.adb.run("reboot", timeout=60)
-                LOG.info("%s: morning reboot requested", self.cfg["name"])
-                return
-            if boot_id == self.state["previous_boot_id"]:
-                raise RuntimeError("Waiting for a changed boot ID; no second reboot will be sent this wake window")
-        if self.adb.shell("getprop", "sys.boot_completed") != "1":
-            raise RuntimeError("Waiting for Android boot completion")
-        # Delay after observing completed boot, persisted across container restarts.
-        if self.state.get("ready_window") != token or "ready_at" not in self.state:
-            if self.cfg["morning_action"] == "reboot":
-                self.adb.shell("setprop", "service.bootanim.exit", "1")
-            self.state.update(ready_window=token,
-                              ready_at=time.time() + self.cfg["boot_delay_seconds"])
-            self.save()
-        if time.time() < self.state["ready_at"]:
-            self.status("waiting_for_boot_delay", mode=mode)
-            return
-        if self.cfg["morning_action"] == "restart_app":
-            self.trim_morning_caches(token)
-        # Recheck schedule before launch in case a command crossed bedtime.
-        if window(datetime.now(self.zone), self.cfg) != (mode, token):
-            return
-        self.launch()
-        self.state["completed_window"] = token
-        self.save()
-        self.status("morning_sequence_completed", mode=mode)
-        LOG.info("%s: morning application launch confirmed", self.cfg["name"])
+        except OSError:
+            self.state = previous
+            raise
+        self.manual_tick()
 
-    def trim_morning_caches(self, token):
-        if self.state.get("cache_trimmed_window") == token:
-            return
-        self.trim_device_caches()
-        self.state["cache_trimmed_window"] = token
+    def job_expired(self, job):
+        if job.get("source") == "scheduled":
+            return not self.scheduled or datetime.now(self.zone).timestamp() >= job["expires_at"]
+        return not self.active_override(datetime.now(self.zone))
+
+    def job_status(self, job, result, **extra):
+        self.status(f"{job.get('source', 'manual')}_{job.get('action', 'reboot')}_{result}", **extra)
+
+    def finish_job(self, job, message):
+        phase = "completed"
+        if job.get("action") == "hard_reboot" and not job.get("off_confirmed"):
+            phase = "failed"
+            message = "Power restored and display mode applied, but the plug off command was not confirmed; hard reboot may not have occurred."
+        job.update(phase=phase, message=message, completed_at=time.time())
+        if self.scheduled and job.get("source") != "scheduled":
+            event = list(self.schedule_event(datetime.now(self.zone)))
+            if event[0] == ("sleep" if self.power_suspended() else "wake"):
+                self.state["schedule_event"] = event
         self.save()
-        LOG.info("%s: morning cache trim command completed", self.cfg["name"])
+        self.job_status(job, phase)
+        LOG.info("%s: %s", self.cfg["name"], message)
+
+    def sleep_tick(self, job):
+        """Try Android shutdown at most three times, then cut plug power."""
+        if job["phase"] not in SHUTDOWN_PHASES:
+            job.update(phase="shutting_down", shutdown_attempts=0, shutdown_started_at=time.time())
+            self.state["power_paused"] = False
+            self.save()
+        if job["phase"] == "shutting_down":
+            if job["shutdown_attempts"] >= SHUTDOWN_ATTEMPTS:
+                job.update(phase="sleep_power_off", forced=True,
+                           message="Android shutdown attempt limit reached; forcing plug power off")
+                self.save()
+            else:
+                job["shutdown_attempts"] += 1
+                self.save()  # A restart cannot reset the shutdown attempt budget.
+                try:
+                    self.adb.connect()
+                except Exception as exc:
+                    job.update(phase="sleep_power_off", forced=True,
+                               message=f"ADB unavailable; forcing plug power off: {str(exc)[:400]}")
+                else:
+                    # Journal a grace period before sending: Android may shut down
+                    # successfully even if the ADB response is lost or we restart.
+                    job.update(phase="shutdown_wait", power_off_at=time.time() + SHUTDOWN_GRACE_SECONDS)
+                    self.save()
+                    errors = []
+                    for command in (("svc", "power", "shutdown"), ("reboot", "-p")):
+                        try:
+                            output = self.adb.shell(*command)
+                            # svc can print a failure/usage message and exit zero.
+                            if re.search(r"failed|error|exception|denied|not found|usage:", output, re.I):
+                                raise RuntimeError(output[:400])
+                        except Exception as exc:
+                            errors.append(str(exc)[:400])
+                        else:
+                            job.update(message="Android shutdown requested; allowing 30 seconds before cutting power")
+                            break
+                    else:
+                        job.update(phase="shutting_down", message="; ".join(errors)[:600])
+                        if job["shutdown_attempts"] >= SHUTDOWN_ATTEMPTS:
+                            job.update(phase="sleep_power_off", forced=True,
+                                       message="Android shutdown failed after 3 attempts; forcing plug power off")
+                    # Measure the grace period from command completion.
+                    job["power_off_at"] = time.time() + SHUTDOWN_GRACE_SECONDS
+                self.save()
+                self.job_status(job, job["phase"], **({"error": job["message"]} if job.get("forced") else {}))
+                if job.get("forced"):
+                    LOG.warning("%s: %s", self.cfg["name"], job["message"])
+        if job["phase"] == "shutdown_wait":
+            if time.time() < job["power_off_at"]:
+                return
+            job["phase"] = "sleep_power_off"
+            self.save()
+        if job["phase"] == "sleep_power_off":
+            self.state.update(power="unknown", power_paused=False)
+            self.save()
+            POWER.set_power(self.cfg["wyze_mac"], False)
+            self.state["power"] = "off"
+            self.finish_job(job, "Plug powered off" + (
+                "; forced shutdown because Android shutdown was unavailable" if job.get("forced")
+                else " after Android shutdown grace period"))
+
+    def wake_tick(self, job):
+        """Power up once, then make five connection attempts spaced 30s apart."""
+        if job["phase"] == "queued":
+            job["phase"] = "power_on_pending"
+            self.save()
+        if job["phase"] == "power_on_pending":
+            POWER.set_power(self.cfg["wyze_mac"], True)
+            self.state.update(power="on", power_paused=False)
+            job.update(phase="boot_wait", powered_on_at=time.time(), connect_attempts=0,
+                       next_attempt_at=time.time() + self.cfg["boot_delay_seconds"],
+                       message="Plug powered on; waiting for boot delay")
+            self.save()
+            self.job_status(job, "boot_wait")
+            return
+        if time.time() < job.get("next_attempt_at", 0):
+            return
+        attempts = job.get("connect_attempts", 0)
+        if attempts >= WAKE_ATTEMPTS:
+            job.update(phase="failed", message="Wake failed after 5 attempts. Check ADB connectivity and frame logs.")
+            self.save()
+            self.job_status(job, "failed", error=job["message"])
+            LOG.error("%s: %s", self.cfg["name"], job["message"])
+            return
+        job.update(connect_attempts=attempts + 1, next_attempt_at=time.time() + RETRY_SECONDS)
+        self.save()
+        try:
+            self.adb.connect()
+            if self.job_expired(job):
+                job.update(phase="cancelled", message="The next schedule event passed; wake cancelled.")
+                self.save()
+                return
+            self.adb.shell("setprop", "service.bootanim.exit", "1")
+            self.restore_brightness()
+            # pidof exits 1 when absent; a remote conditional distinguishes that
+            # normal result from an ADB transport failure. Match the main process.
+            running = self.adb.shell("sh", "-c", f'pidof {shlex.quote(self.cfg["package"])} || [ "$?" = 1 ]')
+            if self.job_expired(job):
+                job.update(phase="cancelled", message="The next schedule event passed; wake cancelled.")
+                self.save()
+                return
+            if not running.strip():
+                self.start_app()
+            elif not re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", running.strip()):
+                raise RuntimeError("Cannot determine whether ImmichFrame is running")
+            self.finish_job(job, "Wake completed; brightness restored and ImmichFrame running")
+        except Exception as exc:
+            attempts = job["connect_attempts"]
+            job.update(phase="failed" if attempts == WAKE_ATTEMPTS else "boot_wait",
+                       next_attempt_at=time.time() + RETRY_SECONDS,
+                       message=f"Wake attempt {attempts}/{WAKE_ATTEMPTS} failed: {str(exc)[:450]}" +
+                               (". Retrying in 30 seconds." if attempts < WAKE_ATTEMPTS else ". No attempts remaining."))
+            self.save()
+            self.job_status(job, "failed" if attempts == WAKE_ATTEMPTS else "waiting", error=job["message"])
+            (LOG.error if attempts >= 3 else LOG.warning)("%s: %s", self.cfg["name"], job["message"])
 
     def trim_device_caches(self):
         self.adb.shell("am", "force-stop", self.cfg["package"])
         self.adb.shell("pm", "trim-caches", "999G", timeout=120)
 
-    def remote_command(self, command):
-        host = self.cfg["address"].rsplit(":", 1)[0]
-        try:
-            with urlopen(f"http://{host}:53287/{command}", timeout=20) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"HTTP {response.status}")
-        except (OSError, RuntimeError) as exc:
-            raise RuntimeError(f"ImmichFrame {command} failed: {exc}") from exc
+    def restore_brightness(self):
+        self.adb.shell("settings", "put", "system", "screen_brightness_mode", "0")
+        self.adb.shell("settings", "put", "system", "screen_brightness",
+                       str(self.cfg.get("day_brightness", 128)))
 
-    def night(self):
-        if self.cfg.get("night_action", "stop_app") == "dim":
-            self.remote_command("dim")
-            return
-        # Attempt every action even if an earlier command fails.
-        errors = []
-        for args in (("am", "force-stop", self.cfg["package"]),
-                     ("settings", "put", "system", "screen_brightness_mode", "0"),
-                     ("settings", "put", "system", "screen_brightness", "0")):
-            try:
-                self.adb.shell(*args)
-            except Exception as exc:
-                errors.append(str(exc))
-        if errors:
-            raise RuntimeError("; ".join(errors))
+    def start_app(self):
+        output = self.adb.shell("am", "start", "-W", "-n", self.cfg["component"])
+        if re.search(r"error|exception|unable to resolve", output, re.I) or "Status: ok" not in output:
+            raise RuntimeError(f"Application launch not confirmed: {output[:600]}")
 
     def launch(self):
         self.adb.shell("input", "keyevent", "224")
         self.adb.shell("am", "force-stop", self.cfg["package"])
-        self.adb.shell("settings", "put", "system", "screen_brightness_mode", "0")
-        self.adb.shell("settings", "put", "system", "screen_brightness",
-                       str(self.cfg.get("day_brightness", 128)))
-        output = self.adb.shell("am", "start", "-W", "-n", self.cfg["component"])
-        if re.search(r"error|exception|unable to resolve", output, re.I) or "Status: ok" not in output:
-            raise RuntimeError(f"Application launch not confirmed: {output[:600]}")
+        self.restore_brightness()
+        self.start_app()
 
     def request_reboot(self, request_id, mode="soft"):
         if mode not in ("soft", "hard"):
@@ -422,9 +484,9 @@ class Frame:
                 return  # Same browser request never renews an override.
             if old.get("phase") in ACTIVE_PHASES:
                 raise RuntimeError("A manual action is already in progress for this frame.")
-            if action in POWER_ACTIONS and not self.cfg.get("wyze_mac"):
+            if action in PLUG_ACTIONS and not self.cfg.get("wyze_mac"):
                 raise RuntimeError("Pair a Wyze plug in frame settings first.")
-            if self.power_suspended() and action not in ("power_on", "power_off"):
+            if self.power_suspended() and action not in ("power_on", "power_off", "wake", "sleep"):
                 raise RuntimeError("Frame power is off or unknown. Power it on first.")
             now = time.time()
             last_reboot = self.state.get("last_reboot_requested_at",
@@ -434,7 +496,7 @@ class Frame:
             previous = deepcopy(self.state)
             self.state["manual"] = dict(
                 id=request_id, action=action, phase="queued", requested_at=now,
-                message="Waiting for plug" if action in POWER_ACTIONS else "Waiting to connect")
+                message="Waiting for plug" if action in PLUG_ACTIONS else "Waiting to connect")
             self.state["last_reboot_requested_at"] = last_reboot
             if action in ("reboot", "hard_reboot"):
                 self.state["last_reboot_requested_at"] = now
@@ -449,8 +511,6 @@ class Frame:
             except OSError:
                 self.state = previous
                 raise
-            self.last_mode = None
-            self.last_night = 0
             self.wakeup.set()
             LOG.info("%s: manual %s queued", self.cfg["name"], action)
         finally:
@@ -463,69 +523,58 @@ class Frame:
         if job.get("phase") not in ACTIVE_PHASES:
             return False
         action = job.get("action", "reboot")  # Jobs written before v1.2.0 are reboots.
-        if action in ("wake", "sleep", "reset_app") and not self.active_override(datetime.now(self.zone)):
-            job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
+        if (action in ("wake", "sleep", "reset_app") and self.job_expired(job)
+                and job["phase"] not in SHUTDOWN_PHASES):
+            job.update(phase="cancelled", message="The next schedule event passed; action cancelled.")
             self.save()
             return False
         # Bounded job, including unreachable frames. Never retry reboot itself.
         restoring_power = action == "hard_reboot" and job["phase"] in POWER_PHASES
-        if time.time() - job.get("powered_on_at", job["requested_at"]) > 900 and not restoring_power:
+        connecting_wake = action == "wake" and job["phase"] == "boot_wait"
+        started_at = job.get("shutdown_started_at", job.get("powered_on_at", job["requested_at"]))
+        if time.time() - started_at > 900 and not restoring_power and not connecting_wake:
             job.update(phase="failed", message="Timed out after 15 minutes. Check frame connectivity and the configured action.")
             self.save()
-            self.status(f"manual_{action}_failed", error=job["message"])
+            self.job_status(job, "failed", error=job["message"])
             return True
         try:
+            if action in ("wake", "sleep") or job["phase"] in SHUTDOWN_PHASES:
+                if not self.cfg.get("wyze_mac"):
+                    job.update(phase="failed", message="Pair a Wyze plug in frame settings to use wake and sleep.")
+                    self.save()
+                    self.job_status(job, "failed", error=job["message"])
+                    LOG.error("%s: %s", self.cfg["name"], job["message"])
+                elif action == "wake":
+                    self.wake_tick(job)
+                else:
+                    self.sleep_tick(job)
+                return True
             if action in POWER_ACTIONS and self.power_tick(job):
                 return True
             if self.power_suspended():
                 return True
-            http_wake = action == "wake" and self.cfg.get("morning_action") == "undim"
-            http_sleep = action == "sleep" and self.cfg.get("night_action", "stop_app") == "dim"
-            if not (http_wake or http_sleep):
-                self.adb.connect()
-            if action in ("wake", "sleep", "reset_app"):
-                # A slow connection must not apply an override after its boundary.
-                if not self.active_override(datetime.now(self.zone)):
-                    job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
+            self.adb.connect()
+            if action == "reset_app":
+                if self.job_expired(job):
+                    job.update(phase="cancelled", message="The next schedule event passed; app reset cancelled.")
                     self.save()
                     return False
-                if http_wake:
-                    self.remote_command("undim")
-                    message = "ImmichFrame undim command completed"
-                elif action in ("wake", "reset_app"):
-                    if action == "reset_app" and not job.get("cache_trimmed"):
-                        self.trim_device_caches()
-                        job.update(cache_trimmed=True, phase="starting",
-                                   message="Cache trim completed; restarting ImmichFrame")
+                if not job.get("cache_trimmed"):
+                    self.trim_device_caches()
+                    job.update(cache_trimmed=True, phase="starting",
+                               message="Cache trim completed; restarting ImmichFrame")
+                    self.save()
+                    if self.job_expired(job):
+                        job.update(phase="cancelled", message="The next schedule event passed; app reset cancelled.")
                         self.save()
-                        if not self.active_override(datetime.now(self.zone)):
-                            job.update(phase="cancelled", message="The next schedule event passed; manual action cancelled.")
-                            self.save()
-                            return False
-                    self.launch()
-                    message = ("App reset completed: device cache trim finished and ImmichFrame launched"
-                               if action == "reset_app" else "App launched and day brightness restored")
-                else:
-                    self.night()
-                    self.state.pop("completed_window", None)
-                    self.last_night = time.monotonic()
-                    self.last_mode = "night"
-                    message = ("ImmichFrame dim command completed"
-                               if self.cfg.get("night_action", "stop_app") == "dim"
-                               else "App stopped and brightness set to zero")
-                job.update(phase="completed", message=message, completed_at=time.time())
-                self.save()
-                self.status(f"manual_{action}_completed")
-                LOG.info("%s: manual %s completed", self.cfg["name"], action)
+                        return False
+                self.launch()
+                self.finish_job(job, "App reset completed: device cache trim finished and ImmichFrame launched")
                 return True
             boot_id = self.adb.boot_id()
             if action == "reboot" and job["phase"] == "queued":
                 job.update(phase="rebooting", previous_boot_id=boot_id,
                            message="Reboot requested; waiting for the frame")
-                mode, token = window(datetime.now(self.zone), self.cfg)
-                if mode == "day":
-                    # Manual reboot fulfills today's reboot attempt too.
-                    self.state.update(attempted_window=token, previous_boot_id=boot_id)
                 self.save()  # Journal before sending, just like the scheduled path.
                 self.adb.run("reboot", timeout=60)
                 return True
@@ -542,34 +591,21 @@ class Frame:
             if time.time() < job["ready_at"]:
                 return True
             now = datetime.now(self.zone)
-            mode, token = window(now, self.cfg)
+            mode = "day" if self.schedule_event(now)[0] == "wake" else "night"
             override = self.active_override(now)
             mode = override.get("mode", mode if self.scheduled else "day")
             if mode == "night":
-                if self.cfg.get("night_action", "stop_app") == "dim":
-                    self.launch()
-                self.night()
-                self.state.pop("completed_window", None)
-                message = "Reboot completed; configured night action completed"
-                self.last_night = time.monotonic()
-            else:
-                self.launch()
-                self.state["completed_window"] = token
-                message = "Reboot completed and ImmichFrame launched"
-            phase = "completed"
-            if action == "power_on":
-                message = message.replace("Reboot completed", "Power on completed")
-            if action == "hard_reboot" and not job.get("off_confirmed"):
-                phase = "failed"
-                message = "Power restored and display mode applied, but the plug off command was not confirmed; hard reboot may not have occurred."
-            job.update(phase=phase, message=message, completed_at=time.time())
-            self.save()
-            self.status(f"manual_{action}_{phase}")
-            LOG.info("%s: %s", self.cfg["name"], message)
+                if not self.cfg.get("wyze_mac"):
+                    raise RuntimeError("Pair a Wyze plug to shut down the frame for sleep.")
+                self.sleep_tick(job)
+                return True
+            self.launch()
+            self.finish_job(job, "Power on completed and ImmichFrame launched" if action == "power_on"
+                            else "Reboot completed and ImmichFrame launched")
         except Exception as exc:
             job["message"] = str(exc)[:600]
             self.save()
-            self.status(f"manual_{action}_waiting", error=job["message"])
+            self.job_status(job, "waiting", error=job["message"])
             LOG.warning("%s manual %s: %s", self.cfg["name"], action, exc)
         return True
 
@@ -598,7 +634,7 @@ class Frame:
         if job["phase"] == "power_off_pending":
             # A lost response can mean the plug switched off. Suspend all device
             # work before sending, and safely repeat this idempotent command.
-            self.state["power"] = "unknown"
+            self.state.update(power="unknown", power_paused=True)
             self.save()
             POWER.set_power(self.cfg["wyze_mac"], False)
             self.state["power"] = "off"
@@ -618,14 +654,7 @@ class Frame:
             self.state["power"] = "on"
             job.update(phase="rebooting", powered_on_at=time.time(),
                        message="Plug powered on; waiting for Android to boot")
-            # Power-up fulfills this morning's reboot attempt, even if ADB is slow.
-            mode, token = window(datetime.now(self.zone), self.cfg)
-            if mode == "day":
-                self.state.update(attempted_window=token, previous_boot_id=None)
-            self.state.pop("completed_window", None)
-            self.state.pop("ready_at", None)
-            self.last_mode = None
-            self.last_night = 0
+            self.state["power_paused"] = False
             self.save()
             self.status("powered_on")
             return True
@@ -641,11 +670,13 @@ class Frame:
         display_override = dict(override)
         if override and self.scheduled:
             display_override["until"] = datetime.fromtimestamp(override["expires_at"], self.zone).isoformat()
-        return {**self.cfg, "mode": override.get("mode", window(now, self.cfg)[0]),
+        mode = "day" if self.schedule_event(now)[0] == "wake" else "night"
+        return {**self.cfg, "mode": override.get("mode", mode),
                 "status": status, "job": job, "override": display_override,
                 "busy": job.get("phase") in ACTIVE_PHASES,
                 "power": state.get("power", "untracked"),
-                "power_suspended": self.power_suspended(state)}
+                "power_suspended": self.power_suspended(state),
+                "schedule_paused": self.schedule_paused(state)}
 
     def work(self):
         while not STOP.is_set() and not self.stopped.is_set():
@@ -725,7 +756,7 @@ class FrameRegistry:
         accepted, errors = [], {}
         with self.lock:
             for name, frame in self.frames.items():
-                if not frame.cfg.get("enabled", True) or frame.power_suspended():
+                if not frame.cfg.get("enabled", True):
                     continue
                 try:
                     frame.request_action(action, token)
@@ -778,7 +809,8 @@ class FrameRegistry:
             try:
                 if frame is not None:
                     job = frame.state.get("manual", {})
-                    if job.get("action") in POWER_ACTIONS and job.get("phase") in ACTIVE_PHASES:
+                    if (job.get("phase") in SHUTDOWN_PHASES or
+                            job.get("action") in PLUG_ACTIONS and job.get("phase") in ACTIVE_PHASES):
                         raise RuntimeError("Wait for the power action to finish before changing this frame.")
                     if (cfg is not None and frame.power_suspended()
                             and cfg.get("wyze_mac") != frame.cfg.get("wyze_mac")):
@@ -818,8 +850,6 @@ class FrameRegistry:
                             job.update(phase="cancelled", message="Frame management disabled.")
                         frame.state.pop("override", None)
                         frame.save()
-                    frame.last_mode = None
-                    frame.last_night = 0
                     frame.wakeup.set()
                     self.frames = {cfg["name"] if key == name else key: existing
                                    for key, existing in self.frames.items()}

@@ -38,7 +38,6 @@ class PowerTests(unittest.TestCase):
         frame.adb = Mock()
         frame.adb.boot_id.return_value = 'new-boot'
         frame.adb.shell.side_effect = lambda *args, **kwargs: 'Status: ok' if args[:2] == ('am', 'start') else '1'
-        frame.remote_command = Mock()
         return frame
 
     def test_off_stops_all_device_work_and_persists_across_restart(self):
@@ -52,8 +51,7 @@ class PowerTests(unittest.TestCase):
             restored.tick()
         self.frame.adb.connect.assert_not_called()
         restored.adb.connect.assert_not_called()
-        restored.remote_command.assert_not_called()
-        for action in ('wake', 'sleep', 'reset_app', 'reboot', 'hard_reboot'):
+        for action in ('reset_app', 'reboot', 'hard_reboot'):
             with self.assertRaisesRegex(RuntimeError, 'Power it on'):
                 restored.request_action(action, 'b' * 32)
         restored.request_action('power_off', 'a' * 32)  # idempotent replay
@@ -163,7 +161,11 @@ class PowerTests(unittest.TestCase):
         self.time.return_value = 1030
         self.frame.tick()
         self.frame.tick()
-        self.frame.adb.shell.assert_any_call('settings', 'put', 'system', 'screen_brightness', '0')
+        self.frame.adb.shell.assert_any_call('svc', 'power', 'shutdown')
+        self.time.return_value = 1060
+        self.frame.tick()
+        self.assertEqual(self.frame.state['power'], 'off')
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
         self.assertFalse(any(x.args[:2] == ('am', 'start') for x in self.frame.adb.shell.call_args_list))
 
     def test_pairing_required_cooldown_and_overlapping_actions(self):
@@ -179,19 +181,38 @@ class PowerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'two minutes'):
             self.frame.request_reboot('b' * 32)
 
-    def test_global_actions_skip_off_frames_and_edit_cannot_interrupt_cycle(self):
+    def test_global_wake_includes_off_frames_and_edit_cannot_interrupt_cycle(self):
         registry = c.FrameRegistry(self.cfg, self.data, [self.frame])
         self.frame.request_action('power_off', 'a' * 32)
         self.frame.tick()
-        self.assertEqual(registry.request_all('wake', 'b' * 32), ([], {}))
         with self.assertRaisesRegex(RuntimeError, 'Power the frame on'):
             registry.change('living-room', {**self.frame.cfg, 'wyze_mac': ''}, registry.revision)
-        self.frame.state['power'] = 'on'
+        self.assertEqual(registry.request_all('wake', 'b' * 32), (['living-room'], {}))
+        self.frame.tick()
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
         self.frame.request_reboot('c' * 32, 'hard')
         self.frame.tick()
         for cfg in (None, {**self.frame.cfg, 'enabled': False}, self.frame.cfg):
             with self.assertRaisesRegex(RuntimeError, 'power action'):
                 registry.change('living-room', cfg, registry.revision)
+
+    def test_soft_reboot_shutdown_cannot_be_interrupted_by_disabling_management(self):
+        self.datetime.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo('UTC'))
+        registry = c.FrameRegistry(self.cfg, self.data, [self.frame])
+        self.frame.request_reboot('a' * 32)
+        self.frame.adb.boot_id.return_value = 'old-boot'
+        self.frame.tick()
+        self.time.return_value = 1890  # Boot completed near the reboot timeout.
+        self.frame.adb.boot_id.return_value = 'new-boot'
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'shutdown_wait')
+        with self.assertRaisesRegex(RuntimeError, 'power action'):
+            registry.change('living-room', {**self.frame.cfg, 'enabled': False}, registry.revision)
+        self.time.return_value = 1920
+        self.frame.tick()
+        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
 
     def test_mac_validation_and_duplicates(self):
         self.assertEqual(normalize_mac(' aa:bb:cc:dd:ee:ff '), 'AABBCCDDEEFF')
@@ -301,7 +322,7 @@ class PowerWebTests(unittest.TestCase):
 
     def test_page_shows_power_controls_and_reboot_dropdown(self):
         self.login()
-        self.frame.snapshot.return_value.update(wyze_mac='AABBCCDDEEFF', power='off', power_suspended=True)
+        self.frame.snapshot.return_value.update(wyze_mac='AABBCCDDEEFF', power='off', power_suspended=True, schedule_paused=True)
         response = self.client.get('/')
         self.assertIn(b'name="mode"', response.data)
         self.assertIn(b'Hard (plug, 30s off)', response.data)

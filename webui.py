@@ -232,24 +232,22 @@ def create_app(config, registry, data):
         if name is None:
             values = dict(name="", address="", enabled=True, run_as_root=False, package="com.immichframe.immichframe",
                           component="com.immichframe.immichframe/.MainActivity",
-                          wake="07:00", sleep="22:00", morning_action="reboot", night_action="stop_app",
-                          day_brightness=128, boot_delay_seconds=60, night_recheck_seconds=300)
+                          wake="07:00", sleep="22:00", day_brightness=128, boot_delay_seconds=60)
         error, code = None, 200
         if request.method == "POST":
             revision = request.form.get("revision", "")
             # Keep unknown file-based options intact when editing a frame.
-            for field in ("name", "address", "package", "component", "wake", "sleep", "morning_action",
-                          "day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
+            for field in ("name", "address", "package", "component", "wake", "sleep",
+                          "day_brightness", "boot_delay_seconds"):
                 values[field] = request.form.get(field, "").strip()
             values["wyze_mac"] = request.form.get("wyze_mac", values.get("wyze_mac", "")).strip()
-            values["night_action"] = request.form.get("night_action", values.get("night_action", "stop_app")).strip()
             enabled = request.form.get("enabled", "true")
             values["enabled"] = enabled == "true"
             if enabled not in ("true", "false"):
                 error, code = "Frame enabled must be true or false.", 400
             values["run_as_root"] = request.form.get("run_as_root") == "true"
             parsed = dict(values)
-            for field in ("day_brightness", "boot_delay_seconds", "night_recheck_seconds"):
+            for field in ("day_brightness", "boot_delay_seconds"):
                 try:
                     parsed[field] = int(values[field])
                 except ValueError:

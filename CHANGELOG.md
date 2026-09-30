@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Replace scheduled and manual wake/sleep with Wyze power sequences. Sleep tries
+  Android shutdown three times with plug fallback; wake waits the boot delay and
+  tries ADB five times, 30 seconds apart, reporting errors after the third failure.
+- Clear the boot animation, restore brightness, and preserve ImmichFrame when it
+  already started as Home. Launch it only when absent.
+- Remove morning action, night action, and night recheck settings and behavior.
+  Retired JSON fields are ignored and removed on the next settings save.
+- Preserve schedule wake from nightly power-off, including after service restarts;
+  allow Wake all frames to include powered-off frames.
+
+
+## Unreleased
+
 - Pair a Wyze smart plug to each frame by device MAC, with shared credentials
   supplied through Docker Compose environment variables.
 - Add a Soft/Hard dropdown to Reboot frame. Hard reboot switches the plug off

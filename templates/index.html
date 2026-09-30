@@ -35,7 +35,8 @@
     <dl class="times"><div><dt>Wake</dt><dd>{{ frame.wake }}</dd></div><div><dt>Sleep</dt><dd>{{ frame.sleep }}</dd></div><div><dt>Boot delay</dt><dd>{{ frame.boot_delay_seconds }}s</dd></div></dl>
     <div class="frame-status">
       {% if not frame.get('enabled', true) %}<p class="muted">Management is disabled. No commands or status checks are running.</p>{% endif %}
-      {% if frame.power_suspended %}<p class="muted">Monitoring and scheduling are paused until power is restored.</p>{% endif %}
+      {% if frame.power_suspended %}<p class="muted">{% if frame.schedule_paused %}Monitoring and scheduling are paused until Power on or Wake.{% elif scheduled %}Frame power is off or unknown. The next scheduled wake will restore power.{% else %}Frame power is off or unknown. Use Wake to restore power.{% endif %}</p>{% endif %}
+      {% if not frame.wyze_mac %}<p class="muted">Pair a Wyze plug in settings to enable wake and sleep.</p>{% endif %}
       {% if frame.wyze_mac %}<p class="muted">Wyze plug: {{ frame.wyze_mac }} · {{ 'Power not yet controlled' if frame.power == 'untracked' else 'Last commanded power: ' ~ frame.power }}</p>{% endif %}
       <p class="eyebrow">LAST CONTROLLER RESULT</p>
       <p>{{ frame.status.get('result', 'No activity yet')|replace('_', ' ')|capitalize }}</p>
@@ -45,18 +46,18 @@
     </div>
     {% if frame.override and frame.get('enabled', true) %}
     <div class="job override"><strong>{{ 'Manual wake' if frame.override.mode == 'day' else 'Manual sleep' }}</strong>
-      <p>{{ 'Night commands are paused' if frame.override.mode == 'day' else 'Sleep mode is held' }}{% if frame.override.until %} until <time datetime="{{ frame.override.until }}">{{ frame.override.until }}</time>{% else %} until you change it while scheduling is paused{% endif %}.</p>
+      <p>{{ 'Wake mode is held' if frame.override.mode == 'day' else 'Sleep mode is held' }}{% if frame.override.until %} until <time datetime="{{ frame.override.until }}">{{ frame.override.until }}</time>{% else %} until you change it while scheduling is paused{% endif %}.</p>
     </div>
     {% endif %}
     {% if frame.job %}
-    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Last manual ' if not frame.busy else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
+    <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Scheduled ' if frame.job.get('source') == 'scheduled' else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|replace('_', ' ')|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
     {% endif %}
     <div class="display-actions">
       {% for action, label in [('wake', 'Wake frame'), ('sleep', 'Sleep frame')] %}
       <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action=action) }}">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="request_id" value="{{ request_token() }}">
-        <button class="{{ 'primary' if action == 'wake' else 'quiet' }}" type="submit" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
+        <button class="{{ 'primary' if action == 'wake' else 'quiet' }}" type="submit" {% if frame.busy or not frame.wyze_mac or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
       </form>
       {% endfor %}
     </div>
@@ -98,7 +99,7 @@
   <article class="frame-card empty-state"><h2>No frames yet.</h2><p class="muted">Add a frame to configure its schedule and control it here.</p><a class="button primary" href="{{ url_for('edit_frame') }}">Add your first frame</a></article>
 {% endfor %}
 </div>
-<p class="footnote">Results show controller actions; they do not confirm that photos are advancing. {% if scheduled %}Wake restores the app and brightness until the next scheduled sleep. Sleep stops the app and dims the display until the next scheduled wake.{% else %}Wake restores the app and brightness. Sleep stops the app and dims the display. Manual modes remain until changed while scheduling is paused.{% endif %} Reboots respect manual overrides.</p>
+<p class="footnote">Results show controller actions; they do not confirm that photos are advancing. {% if scheduled %}Wake powers on the plug, waits for boot, and restores brightness and ImmichFrame until the next scheduled sleep. Sleep shuts down Android and cuts plug power until the next scheduled wake.{% else %}Wake powers on the plug and restores brightness and ImmichFrame after boot. Sleep shuts down Android and cuts plug power. Manual modes remain until changed while scheduling is paused.{% endif %} Reboots respect manual overrides.</p>
 <dialog id="reboot-dialog">
   <p class="eyebrow">RESTART DISPLAY</p><h2>Reboot <span id="reboot-name"></span>?</h2>
   <p id="reboot-method"></p>

@@ -22,21 +22,18 @@
     </div>
   </fieldset>
   <fieldset><legend>Wyze smart plug</legend>
-    <div class="field"><label for="wyze_mac">Plug device MAC (optional)</label><input id="wyze_mac" name="wyze_mac" value="{{ frame.get('wyze_mac', '') }}" placeholder="AABBCCDDEEFF" aria-describedby="wyze-help"><small id="wyze-help">Pair the plug in the Wyze app first, then enter its device MAC here. Enables power on/off and hard reboot. Configure Wyze account credentials in Docker Compose.</small></div>
+    <div class="field"><label for="wyze_mac">Plug device MAC</label><input id="wyze_mac" name="wyze_mac" value="{{ frame.get('wyze_mac', '') }}" placeholder="AABBCCDDEEFF" aria-describedby="wyze-help"><small id="wyze-help">Pair the plug in the Wyze app first, then enter its device MAC here. Required for wake, sleep, scheduled actions, and hard reboot. Configure Wyze account credentials in Docker Compose.</small></div>
   </fieldset>
   <fieldset><legend>Schedule and display</legend>
-    <p class="muted">Times use {{ timezone }}. Overnight schedules are supported; wake and sleep must differ.</p>
+    <p class="muted">Sleep shuts down Android and cuts plug power. Wake restores plug power and starts the display. Times use {{ timezone }}. Overnight schedules are supported; wake and sleep must differ.</p>
     <div class="settings-grid">
       <div class="field"><label for="wake">Wake time</label><input id="wake" name="wake" type="time" value="{{ frame.wake }}" required></div>
       <div class="field"><label for="sleep">Sleep time</label><input id="sleep" name="sleep" type="time" value="{{ frame.sleep }}" required></div>
-      <div class="field"><label for="morning_action">Morning action</label><select id="morning_action" name="morning_action" required><option value="reboot" {% if frame.morning_action == 'reboot' %}selected{% endif %}>Reboot frame</option><option value="restart_app" {% if frame.morning_action == 'restart_app' %}selected{% endif %}>Restart app only</option><option value="undim" {% if frame.morning_action == 'undim' %}selected{% endif %}>Undim via ImmichFrame HTTP</option></select></div>
-      <div class="field"><label for="night_action">Night action</label><select id="night_action" name="night_action" required><option value="stop_app" {% if frame.get('night_action', 'stop_app') == 'stop_app' %}selected{% endif %}>Stop app and dim screen</option><option value="dim" {% if frame.get('night_action') == 'dim' %}selected{% endif %}>Dim via ImmichFrame HTTP (keep app open)</option></select><small>HTTP dim/undim uses the ADB hostname on port 53287. ImmichFrame must be running and reachable. Pair Undim with HTTP dim; it cannot start a stopped app.</small></div>
-      <div class="field"><label for="day_brightness">Day brightness</label><input id="day_brightness" name="day_brightness" type="number" min="1" max="255" step="1" value="{{ frame.day_brightness }}" required><small>1–255 for ADB app launches. HTTP dim/undim uses ImmichFrame’s brightness behavior.</small></div>
-      <div class="field"><label for="boot_delay_seconds">Boot delay (seconds)</label><input id="boot_delay_seconds" name="boot_delay_seconds" type="number" min="0" max="600" step="1" value="{{ frame.boot_delay_seconds }}" required><small>0–600 seconds after Android finishes booting.</small></div>
-      <div class="field"><label for="night_recheck_seconds">Night recheck (seconds)</label><input id="night_recheck_seconds" name="night_recheck_seconds" type="number" min="30" max="3600" step="1" value="{{ frame.night_recheck_seconds }}" required><small>30–3600 seconds between night commands.</small></div>
+      <div class="field"><label for="day_brightness">Day brightness</label><input id="day_brightness" name="day_brightness" type="number" min="1" max="255" step="1" value="{{ frame.day_brightness }}" required><small>1–255. Applied after waking or launching the app.</small></div>
+      <div class="field"><label for="boot_delay_seconds">Boot delay (seconds)</label><input id="boot_delay_seconds" name="boot_delay_seconds" type="number" min="0" max="600" step="1" value="{{ frame.boot_delay_seconds }}" required><small>0–600 seconds from plug power-on before the first ADB connection attempt. Wake retries up to five times, 30 seconds apart.</small></div>
     </div>
   </fieldset>
-  <p class="muted">When scheduling is enabled, new frames and schedule changes can trigger commands immediately. A completed morning sequence is preserved; app and brightness changes take effect on the next launch. Global scheduling and timezone are set through environment variables.</p>
+  <p class="muted">When scheduling is enabled, new frames and schedule changes can trigger commands immediately. Completed schedule events are preserved; app and brightness changes take effect on the next wake or app launch. Global scheduling and timezone are set through environment variables.</p>
   <div class="form-actions"><a class="button quiet" href="{{ url_for('index') }}">Cancel</a><button class="primary" type="submit">{{ 'Save changes' if name else 'Add frame' }}</button></div>
 </form>
 {% endblock %}

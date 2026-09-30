@@ -149,6 +149,7 @@ class RegistryTests(unittest.TestCase):
         frame.adb = Mock()
         frame.tick()  # Global scheduling is off; old manual work must not resume.
         self.assertEqual(frame.adb.mock_calls, [])
+        self.change("living-room", {**frame.cfg, "wyze_mac": "AABBCCDDEEFF"})
         frame.request_action("wake", "b" * 32)
         self.assertEqual(frame.state["manual"]["phase"], "queued")
 
@@ -196,22 +197,20 @@ class RegistryTests(unittest.TestCase):
     def test_edit_and_rename_preserve_journal_and_do_not_repeat_completed_morning(self):
         frame = self.registry.frames["living-room"]
         token = c.window(c.datetime.now(frame.zone), frame.cfg)[1]
-        frame.state = dict(attempted_window=token, completed_window=token,
+        frame.state = dict(schedule_event=list(frame.schedule_event(c.datetime.now(frame.zone))),
+                           attempted_window=token, completed_window=token,
                            previous_boot_id="old-boot", manual=dict(phase="completed", id="a" * 32))
         frame.save()
-        frame.last_night = 100
         renamed = {**frame.cfg, "name": "lounge", "address": "192.0.2.3:5555", "day_brightness": 220}
         self.change("living-room", renamed)
         self.assertIs(self.registry.frames["lounge"], frame)
         self.assertEqual(frame.adb.address, renamed["address"])
-        self.assertEqual(frame.last_night, 0)
         restored = c.FrameRegistry(self.load(), self.data).frames["lounge"]
         self.assertEqual(restored.state, frame.state)
         self.assertEqual(restored.cfg, renamed)
         restored.scheduled = True
         restored.adb = Mock()
-        with patch.object(c, "window", return_value=("day", token)):
-            restored.tick()
+        restored.tick()
         restored.adb.connect.assert_not_called()
         restored.adb.run.assert_not_called()
 
@@ -222,8 +221,7 @@ class RegistryTests(unittest.TestCase):
             dict(address="host:65536"), dict(address="host:5555;reboot"),
             dict(component="different.package/.Activity"), dict(wake="25:00"),
             dict(wake="22:00"), dict(day_brightness=256), dict(day_brightness=True),
-            dict(boot_delay_seconds=-1), dict(night_recheck_seconds=29),
-            dict(morning_action="anything"), dict(night_action="anything"), dict(package=None),
+            dict(boot_delay_seconds=-1), dict(package=None),
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.change("living-room", {**original["frames"][0], **changes})
@@ -377,22 +375,17 @@ class ConfigurationWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(self.registry.frames["living-room"].cfg["wyze_mac"], "")
 
-    def test_http_action_settings_round_trip(self):
-        self.assertEqual(self.registry.frames["living-room"].cfg["night_action"], "stop_app")
-        response = self.client.post("/frames/living-room/edit", data=self.form(
-            morning_action="undim", night_action="dim"))
+    def test_retired_settings_are_ignored_and_removed(self):
+        legacy = dict(morning_action="undim", night_action="dim", night_recheck_seconds=300)
+        loaded = c.validate_config({**self.config, "frames": [{**config()["frames"][0], **legacy}]})
+        for key in legacy:
+            self.assertNotIn(key, loaded["frames"][0])
+        response = self.client.post("/frames/living-room/edit", data=self.form(**legacy))
         self.assertEqual(response.status_code, 303)
-        restored = c.FrameRegistry({
-            **self.config, "frames": c.read_json(self.data / "frames.json", [])}, self.data)
-        frame = restored.frames["living-room"]
-        self.assertEqual(frame.cfg["morning_action"], "undim")
-        self.assertEqual(frame.cfg["night_action"], "dim")
-        page = self.client.get("/frames/living-room/edit").data
-        self.assertIn(b'value="dim" selected', page)
-        self.assertIn(b'value="undim" selected', page)
-        response = self.client.post("/frames/living-room/edit", data=self.form(night_action="invalid"))
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self.registry.frames["living-room"].cfg["night_action"], "dim")
+        saved = c.read_json(self.data / "frames.json", [])[0]
+        for key in legacy:
+            self.assertNotIn(key, saved)
+            self.assertNotIn(key.encode(), self.client.get("/frames/living-room/edit").data)
 
     def test_root_checkbox_add_edit_and_validation_error(self):
         for path in ("/frames/new", "/frames/living-room/edit"):
@@ -500,8 +493,9 @@ class ConfigurationWebTests(unittest.TestCase):
 
     def test_display_controls_queue_actions_and_show_override(self):
         frame = self.registry.frames["living-room"]
+        frame.cfg.update(wyze_mac="AABBCCDDEEFF", boot_delay_seconds=0)
         frame.adb = Mock()
-        frame.adb.shell.return_value = "Status: ok"
+        frame.adb.shell.side_effect = lambda *args: "" if args[:2] == ("sh", "-c") else "Status: ok"
         for action, token, mode in (("wake", "a" * 32, "day"), ("sleep", "b" * 32, "night")):
             frame.adb.reset_mock()
             response = self.client.post(f"/frames/living-room/{action}",
@@ -511,10 +505,11 @@ class ConfigurationWebTests(unittest.TestCase):
             self.assertEqual(frame.state["manual"]["phase"], "queued")
             self.assertEqual(frame.state["override"]["mode"], mode)
             self.assertIn(f"{action.capitalize()} in progress".encode(), response.data)
-            self.assertIn(b"Wake frame", response.data)
-            self.assertIn(b"Sleep frame", response.data)
             self.assertEqual(self.client.post("/frames/living-room/remove", data=self.form()).status_code, 409)
-            frame.tick()
+            with patch.object(c, "POWER"):
+                frame.tick()
+                with patch.object(c.time, "time", return_value=frame.state["manual"].get("power_off_at", frame.state["manual"].get("next_attempt_at", 0))):
+                    frame.tick()
             response = self.client.get("/")
             self.assertIn(f"Manual {action}".encode(), response.data)
             self.assertIn(b"scheduling is paused", response.data)

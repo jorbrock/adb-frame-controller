@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from zoneinfo import ZoneInfo
 
 import controller as c
@@ -37,348 +37,400 @@ class BoundaryTests(unittest.TestCase):
 
 class DisplayTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.data = Path(self.temp.name)
-        self.now = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
-        self.origin = self.now
-        clock = patch.object(c, "datetime", wraps=datetime)
-        self.clock = clock.start()
-        self.clock.now.side_effect = lambda zone: self.now.astimezone(zone)
-        self.addCleanup(clock.stop)
-        wall = patch.object(c.time, "time", side_effect=lambda: self.now.timestamp())
-        wall.start()
-        self.addCleanup(wall.stop)
-        monotonic = patch.object(c.time, "monotonic", side_effect=lambda: 100000 + (self.now - self.origin).total_seconds())
-        monotonic.start()
-        self.addCleanup(monotonic.stop)
-        self.cfg = dict(name="frame", address="192.0.2.1:5555", package="com.example.frame",
-                        component="com.example.frame/.MainActivity", wake="07:00", sleep="22:00",
-                        morning_action="restart_app", day_brightness=200,
-                        boot_delay_seconds=0, night_recheck_seconds=300)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.data = Path(temp.name)
+        self.now = datetime(2026, 9, 18, 12, tzinfo=ZoneInfo('UTC'))
+        for target, kwargs in [('datetime', {'wraps': datetime}), ('POWER', {})]:
+            context = patch.object(c, target, **kwargs)
+            setattr(self, target, context.start())
+            self.addCleanup(context.stop)
+        self.datetime.now.side_effect = lambda zone: self.now.astimezone(zone)
+        context = patch.object(c.time, 'time', side_effect=lambda: self.now.timestamp())
+        context.start()
+        self.addCleanup(context.stop)
+        self.cfg = dict(name='frame', address='192.0.2.1:5555', package='com.example.frame',
+                        component='com.example.frame/.MainActivity', wake='07:00', sleep='22:00',
+                        day_brightness=200, boot_delay_seconds=60, wyze_mac='AABBCCDDEEFF')
+        self.frame = self.recover()
 
-    def frame(self, scheduled=True):
-        frame = c.Frame(self.cfg, "UTC", scheduled, self.data)
+    def recover(self, scheduled=True):
+        frame = c.Frame(deepcopy(self.cfg), 'UTC', scheduled, self.data)
         frame.adb = Mock()
-        frame.adb.boot_id.return_value = "old-boot"
-        frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
-        frame.night = Mock(wraps=frame.night)
-        frame.launch = Mock(wraps=frame.launch)
+        frame.adb.shell.side_effect = self.shell
         return frame
 
-    def wake(self, frame, token="a" * 32):
-        frame.request_action("wake", token)
-        frame.adb.connect.assert_not_called()  # HTTP request only journals the action.
-        frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
-        frame.adb.run.assert_not_called()
-        frame.adb.boot_id.assert_not_called()
+    def shell(self, *args, **kwargs):
+        return 'Status: ok' if args[:2] == ('am', 'start') else ''
 
-    def test_manual_http_wake_retries_across_restart_and_holds_awake(self):
-        self.cfg["morning_action"] = "undim"
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        with patch.object(c, "urlopen") as request:
-            request.side_effect = OSError("unreachable")
-            with self.assertLogs(c.LOG, level="WARNING"):
-                frame.tick()
-            self.assertNotEqual(frame.state["manual"]["phase"], "completed")
-            self.assertEqual(frame.adb.mock_calls, [])
-            recovered = self.frame()
-            request.side_effect = None
-            request.return_value.__enter__.return_value.status = 200
-            recovered.tick()
-            request.assert_called_with("http://192.0.2.1:53287/undim", timeout=20)
-            self.assertEqual(recovered.state["manual"]["phase"], "completed")
-            self.assertIn("undim command completed", recovered.state["manual"]["message"])
-            self.now += timedelta(minutes=10)
-            recovered.tick()
-            self.assertEqual(request.call_count, 2)
-            self.assertEqual(recovered.adb.mock_calls, [])
-            self.assertEqual(recovered.snapshot()["mode"], "day")
+    def advance(self, seconds):
+        self.now += timedelta(seconds=seconds)
 
-    def test_manual_reset_still_launches_with_http_morning_action(self):
-        self.cfg["morning_action"] = "undim"
-        frame = self.frame()
-        frame.request_action("reset_app", "a" * 32)
-        with patch.object(c, "urlopen") as request:
-            frame.tick()
-            request.assert_not_called()
-        frame.adb.connect.assert_called_once()
-        frame.launch.assert_called_once()
-        frame.adb.shell.assert_any_call("pm", "trim-caches", "999G", timeout=120)
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
+    def wake(self, frame=None):
+        frame = frame or self.frame
+        frame.request_action('wake', 'a' * 32)
+        frame.tick()
+        self.advance(self.cfg['boot_delay_seconds'])
+        frame.tick()
+        self.assertEqual(frame.state['manual']['phase'], 'completed')
 
-    def test_manual_sleep_uses_http_dim_without_adb(self):
-        self.cfg["night_action"] = "dim"
-        frame = self.frame()
-        frame.request_action("sleep", "a" * 32)
-        with patch.object(c, "urlopen") as request:
-            request.return_value.__enter__.return_value.status = 200
-            frame.tick()
-            request.assert_called_once_with("http://192.0.2.1:53287/dim", timeout=20)
-        self.assertEqual(frame.adb.mock_calls, [])
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
-        self.assertIn("dim command completed", frame.state["manual"]["message"])
+    def sleep(self, frame=None):
+        frame = frame or self.frame
+        frame.request_action('sleep', 'b' * 32)
+        frame.tick()
+        self.advance(30)
+        frame.tick()
+        self.assertEqual(frame.state['manual']['phase'], 'completed')
 
-    def test_manual_night_reboot_launches_before_http_dim(self):
-        self.cfg["night_action"] = "dim"
-        frame = self.frame()
-        frame.request_action("reboot", "a" * 32)
-        frame.tick()
-        frame.adb.boot_id.return_value = "new-boot"
-        with patch.object(c, "urlopen") as request:
-            def respond(*args, **kwargs):
-                frame.launch.assert_called_once()
-                response = unittest.mock.MagicMock()
-                response.__enter__.return_value.status = 200
-                return response
-            request.side_effect = respond
-            frame.tick()
-            request.assert_called_once_with("http://192.0.2.1:53287/dim", timeout=20)
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
-
-    def test_late_wake_skips_night_rechecks_and_next_morning_until_next_sleep(self):
-        frame = self.frame()
-        self.wake(frame)
-        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "200")
-        frame.launch.assert_called_once()
-        frame.adb.reset_mock()
-        for hour, minute in ((0, 0), (6, 59), (7, 0), (12, 0), (21, 59)):
-            self.now = datetime(2026, 9, 19, hour, minute, tzinfo=self.now.tzinfo)
-            frame.tick()
-            self.assertEqual(frame.snapshot()["mode"], "day")
-            frame.night.assert_not_called()
-            frame.adb.connect.assert_not_called()
-        self.now = self.now.replace(hour=22, minute=0)
-        frame.tick()
-        self.assertNotIn("override", frame.state)
-        frame.night.assert_called_once()
-        self.assertEqual(frame.snapshot()["mode"], "night")
-        frame.tick()
-        frame.night.assert_called_once()
-        self.now += timedelta(minutes=5)
-        frame.tick()
-        self.assertEqual(frame.night.call_count, 2)
-
-    def test_restart_keeps_wake_hold_without_relaunch_or_dimming(self):
-        self.wake(self.frame())
-        self.now += timedelta(minutes=10)
-        recovered = self.frame()
-        recovered.tick()
-        recovered.night.assert_not_called()
-        recovered.launch.assert_not_called()
-        self.assertEqual(recovered.snapshot()["override"]["until"], "2026-09-19T22:00:00+00:00")
-        self.now += timedelta(days=2)
-        recovered.tick()
-        recovered.night.assert_called_once()
-        self.assertNotIn("override", recovered.state)
-
-    def test_manual_sleep_replaces_wake_and_stays_asleep_until_next_wake(self):
-        frame = self.frame()
-        self.wake(frame)
-        frame.request_action("sleep", "b" * 32)
-        frame.tick()
-        frame.night.assert_called_once()
-        self.assertEqual(frame.state["override"]["mode"], "night")
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
-        self.now = self.now.replace(day=19, hour=6, minute=59)
-        frame.tick()
-        self.assertEqual(frame.launch.call_count, 1)
-        self.now = self.now.replace(hour=7, minute=0)
-        frame.tick()
-        self.assertEqual(frame.launch.call_count, 2)
-        self.assertNotIn("override", frame.state)
-        frame.adb.run.assert_not_called()
-
-    def test_daytime_sleep_prevents_scheduler_from_immediately_waking_frame(self):
-        self.now = self.now.replace(hour=12)
-        frame = self.frame()
-        frame.request_action("sleep", "a" * 32)
-        frame.tick()
-        self.now += timedelta(minutes=6)
-        frame.tick()
-        frame.launch.assert_not_called()
-        self.assertEqual(frame.night.call_count, 2)
-        self.assertEqual(frame.snapshot()["override"]["until"], "2026-09-19T07:00:00+00:00")
-        frame.request_action("wake", "b" * 32)
-        frame.tick()
-        frame.launch.assert_called_once()
-        self.assertEqual(frame.snapshot()["mode"], "day")
-
-    def test_overnight_schedule_wake_holds_until_following_morning_sleep(self):
-        self.cfg.update(wake="20:00", sleep="06:00")
-        self.now = self.now.replace(hour=8)
-        frame = self.frame()
-        self.wake(frame)
-        self.assertEqual(frame.snapshot()["override"]["until"], "2026-09-19T06:00:00+00:00")
-        self.now = self.now.replace(day=19, hour=5, minute=59)
-        frame.tick()
-        frame.night.assert_not_called()
-        self.now += timedelta(minutes=1)
-        frame.tick()
-        frame.night.assert_called_once()
-
-    def test_paused_scheduling_keeps_manual_mode_until_changed(self):
-        frame = self.frame(scheduled=False)
-        self.wake(frame)
-        self.now += timedelta(days=2)
-        frame.tick()
-        frame.night.assert_not_called()
-        self.assertNotIn("until", frame.snapshot()["override"])
-        frame.request_action("sleep", "b" * 32)
-        frame.tick()
-        self.now += timedelta(days=2)
-        frame.tick()
-        self.assertEqual(frame.snapshot()["mode"], "night")
-        self.assertEqual(frame.night.call_count, 2)
-        recovered = self.frame(scheduled=True)
-        recovered.tick()
-        self.assertNotIn("override", recovered.state)
-
-    def test_reboot_respects_wake_override_at_night_and_sleep_override_during_day(self):
-        for action, hour in (("wake", 23), ("sleep", 12)):
-            with self.subTest(action=action):
-                # Each iteration gets a fresh device journal.
-                self.cfg["name"] = action
-                self.now = self.now.replace(hour=hour)
-                frame = self.frame()
-                frame.request_action(action, "a" * 32)
-                frame.tick()
-                frame.night.reset_mock()
-                frame.launch.reset_mock()
-                frame.request_reboot("b" * 32)
-                frame.tick()
-                frame.adb.boot_id.return_value = "new-boot"
-                frame.tick()
-                self.assertEqual(frame.state["manual"]["phase"], "completed")
-                frame.adb.run.assert_called_once_with("reboot", timeout=60)
-                if action == "wake":
-                    frame.launch.assert_called_once()
-                    frame.night.assert_not_called()
-                else:
-                    frame.night.assert_called_once()
-                    frame.launch.assert_not_called()
-
-    def test_reboot_crossing_override_expiry_restores_sleep(self):
-        self.now = self.now.replace(hour=21, minute=59)
-        frame = self.frame()
-        self.wake(frame)
-        frame.request_reboot("b" * 32)
-        frame.tick()
-        frame.launch.reset_mock()
-        self.now += timedelta(minutes=2)
-        frame.adb.boot_id.return_value = "new-boot"
-        frame.tick()
-        frame.launch.assert_not_called()
-        frame.night.assert_called_once()
-        self.assertEqual(frame.state["manual"]["phase"], "completed")
-        self.assertNotIn("override", frame.state)
-
-    def test_pre_v120_reboot_journal_resumes_without_another_reboot(self):
-        frame = self.frame()
-        frame.state["manual"] = dict(id="a" * 32, phase="rebooting",
-                                    requested_at=self.now.timestamp(), previous_boot_id="old-boot")
-        frame.save()
-        recovered = self.frame()
-        recovered.adb.boot_id.return_value = "new-boot"
-        recovered.tick()
-        recovered.adb.run.assert_not_called()
-        recovered.night.assert_called_once()
-        self.assertEqual(recovered.state["manual"]["phase"], "completed")
-
-    def test_queued_wake_survives_restart_and_launches_once(self):
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        recovered = self.frame()
-        recovered.tick()
-        recovered.tick()
-        recovered.launch.assert_called_once()
-        recovered.night.assert_not_called()
-        self.assertEqual(recovered.state["manual"]["phase"], "completed")
-
-    def test_expired_queued_wake_never_launches_after_sleep_event(self):
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        self.now += timedelta(days=1)
-        frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "cancelled")
-        frame.launch.assert_not_called()
-        frame.night.assert_called_once()
-
-    def test_connection_crossing_expiry_does_not_apply_stale_wake(self):
-        self.now = self.now.replace(hour=21, minute=59)
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        def connected():
-            self.now = self.now.replace(hour=22, minute=0)
-        frame.adb.connect.side_effect = connected
-        frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "cancelled")
-        frame.launch.assert_not_called()
-        frame.night.assert_called_once()
-
-    def test_failed_action_retries_and_times_out_without_reboot(self):
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        frame.adb.connect.side_effect = RuntimeError("unreachable")
-        with self.assertLogs(c.LOG, level="WARNING"):
-            frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "queued")
-        self.now += timedelta(seconds=901)
-        frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "failed")
-        frame.tick()
-        frame.night.assert_not_called()
-        frame.adb.run.assert_not_called()
-        self.assertEqual(frame.snapshot()["status"]["result"], "manual_wake_active")
-
-    def test_duplicate_requests_do_not_renew_override_and_busy_actions_are_rejected(self):
-        frame = self.frame()
-        frame.request_action("wake", "a" * 32)
-        expires = frame.state["override"]["expires_at"]
-        frame.request_action("wake", "a" * 32)
-        for action in ("wake", "sleep", "reboot"):
-            with self.assertRaisesRegex(RuntimeError, "already in progress"):
-                frame.request_action(action, "b" * 32)
-        with self.assertRaisesRegex(RuntimeError, "different action"):
-            frame.request_action("sleep", "a" * 32)
-        frame.tick()
-        self.now += timedelta(hours=1)
-        frame.request_action("wake", "a" * 32)
-        self.assertEqual(frame.state["override"]["expires_at"], expires)
-        with frame.mutex:
-            with self.assertRaisesRegex(RuntimeError, "busy"):
-                frame.request_action("sleep", "b" * 32)
-
-    def test_display_action_does_not_bypass_legacy_reboot_cooldown(self):
-        frame = self.frame()
-        frame.state["manual"] = dict(id="a" * 32, phase="completed", requested_at=self.now.timestamp())
-        frame.save()
-        frame.request_action("wake", "b" * 32)
-        frame.tick()
-        with self.assertRaisesRegex(RuntimeError, "two minutes"):
-            frame.request_reboot("c" * 32)
-
-    def test_save_failure_does_not_activate_an_override_or_send_commands(self):
-        frame = self.frame()
-        previous = deepcopy(frame.state)
-        with patch.object(frame, "save", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                frame.request_action("wake", "a" * 32)
-        self.assertEqual(frame.state, previous)
+    def test_wake_waits_full_boot_delay_then_initializes_in_order(self):
+        frame = self.frame
+        frame.request_action('wake', 'a' * 32)
         frame.adb.connect.assert_not_called()
-        self.assertFalse(frame.wakeup.is_set())
+        self.POWER.set_power.assert_not_called()
+        frame.tick()
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], True)
+        for seconds in (0, 30, 29):
+            self.advance(seconds)
+            frame.tick()
+            frame.adb.connect.assert_not_called()
+        self.advance(1)
+        frame.tick()
+        self.assertEqual(frame.adb.shell.call_args_list, [
+            call('setprop', 'service.bootanim.exit', '1'),
+            call('settings', 'put', 'system', 'screen_brightness_mode', '0'),
+            call('settings', 'put', 'system', 'screen_brightness', '200'),
+            call('sh', '-c', 'pidof com.example.frame || [ "$?" = 1 ]'),
+            call('am', 'start', '-W', '-n', self.cfg['component'])])
+        frame.adb.run.assert_not_called()
+        self.assertEqual(frame.state['manual']['phase'], 'completed')
 
-    def test_rename_keeps_override_and_its_original_expiry(self):
-        frame = self.frame()
-        self.wake(frame)
-        override = deepcopy(frame.state["override"])
-        registry = c.FrameRegistry(dict(timezone="UTC", enabled=True, frames=[self.cfg]), self.data, [frame])
-        registry.change("frame", {**self.cfg, "name": "renamed", "sleep": "21:00"}, registry.revision)
-        recovered = c.Frame(registry.config["frames"][0], "UTC", True, self.data)
-        self.assertEqual(recovered.state["override"], override)
+    def test_home_app_is_not_stopped_or_relaunched(self):
+        self.frame.adb.shell.side_effect = lambda *args: '1234' if args[:2] == ('sh', '-c') else ''
+        self.wake()
+        self.assertFalse(any(args.args[:2] in (('am', 'start'), ('am', 'force-stop'))
+                             for args in self.frame.adb.shell.call_args_list))
+        self.frame.adb.shell.assert_any_call('settings', 'put', 'system', 'screen_brightness', '200')
+
+    def test_five_attempts_30_seconds_apart_and_error_after_third(self):
+        frame = self.frame
+        frame.request_action('wake', 'a' * 32)
+        frame.tick()
+        frame.adb.connect.side_effect = RuntimeError('offline')
+        self.advance(60)
+        for attempt in range(1, 6):
+            with self.assertLogs(c.LOG, level='ERROR' if attempt >= 3 else 'WARNING'):
+                frame.tick()
+            self.assertEqual(frame.adb.connect.call_count, attempt)
+            if attempt == 3:
+                status = frame.snapshot()['status']
+                self.assertIn('3/5', status['error'])
+                self.assertIn('3/5', frame.log_path.read_text())
+            self.advance(29)
+            frame.tick()
+            self.assertEqual(frame.adb.connect.call_count, attempt)
+            self.advance(1)
+        self.assertEqual(frame.state['manual']['phase'], 'failed')
+        frame.tick()
+        self.assertEqual(frame.adb.connect.call_count, 5)
+        self.POWER.set_power.assert_called_once()
+        self.assertIn('5/5', frame.snapshot()['status']['error'])
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.assertIn('5/5', recovered.snapshot()['status']['error'])
+
+    def test_restart_preserves_boot_delay_and_connection_attempts(self):
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(59)
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.advance(1)
+        recovered.adb.connect.side_effect = RuntimeError('offline')
+        recovered.tick()
+        self.advance(29)
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.advance(1)
+        recovered.tick()
+        self.assertEqual(recovered.state['manual']['connect_attempts'], 2)
+        self.assertEqual(recovered.state['manual']['phase'], 'completed')
+        self.POWER.set_power.assert_called_once()
+
+    def test_can_recover_on_fourth_connection_after_error(self):
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        self.frame.adb.connect.side_effect = [RuntimeError('offline')] * 3 + [None]
+        for _ in range(4):
+            self.frame.tick()
+            self.advance(30)
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+        self.assertNotIn('error', self.frame.snapshot()['status'])
+        self.assertIn('3/5', self.frame.log_path.read_text())
+
+    def test_brightness_or_launch_failure_does_not_report_success(self):
+        for failure in ('settings', 'am', 'sh'):
+            with self.subTest(failure=failure):
+                self.frame.state = {}
+                self.frame.request_action('wake', 'a' * 32)
+                self.frame.tick()
+                self.advance(60)
+                def shell(*args):
+                    if args[0] == failure:
+                        raise RuntimeError('command failed')
+                    return self.shell(*args)
+                self.frame.adb.shell.side_effect = shell
+                self.frame.tick()
+                self.assertNotEqual(self.frame.state['manual']['phase'], 'completed')
+                self.assertIn('command failed', self.frame.snapshot()['status']['error'])
+
+    def test_sleep_grace_period_and_no_night_rechecks_across_restart(self):
+        self.frame.request_action('sleep', 'b' * 32)
+        self.frame.tick()
+        self.frame.adb.shell.assert_called_once_with('svc', 'power', 'shutdown')
+        self.POWER.set_power.assert_not_called()
+        self.advance(29)
+        frame = self.recover()
+        frame.tick()
+        self.POWER.set_power.assert_not_called()
+        self.advance(1)
+        frame.tick()
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
+        frame.adb.connect.assert_not_called()
+        self.assertEqual(frame.state['power'], 'off')
+        self.assertFalse(frame.schedule_paused())
+        for _ in range(3):
+            self.advance(3600)
+            frame = self.recover()
+            frame.tick()
+            frame.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_called_once()
+
+    def test_sleep_falls_back_to_reboot_poweroff_command(self):
+        self.frame.adb.shell.side_effect = [RuntimeError('unsupported'), '']
+        self.sleep()
+        self.assertEqual(self.frame.adb.shell.call_args_list, [call('svc', 'power', 'shutdown'), call('reboot', '-p')])
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
+
+    def test_sleep_cuts_power_immediately_when_adb_is_unreachable(self):
+        self.frame.adb.connect.side_effect = c.subprocess.TimeoutExpired('adb', 20)
+        self.frame.request_action('sleep', 'b' * 32)
+        self.frame.tick()
+        self.frame.adb.shell.assert_not_called()
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
+        self.assertTrue(self.frame.state['manual']['forced'])
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+
+    def test_shutdown_fails_three_times_then_forces_power_off(self):
+        self.frame.adb.shell.side_effect = RuntimeError('permission denied')
+        self.frame.request_action('sleep', 'b' * 32)
+        for attempt in (1, 2):
+            self.frame.tick()
+            self.POWER.set_power.assert_not_called()
+            self.assertEqual(self.frame.state['manual']['shutdown_attempts'], attempt)
+        recovered = self.recover()
+        recovered.adb.shell.side_effect = RuntimeError('permission denied')
+        recovered.tick()
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
+        self.assertEqual(recovered.adb.connect.call_count, 1)
+        self.assertEqual(recovered.state['manual']['shutdown_attempts'], 3)
+        self.assertEqual(recovered.state['manual']['phase'], 'completed')
+
+    def test_shutdown_error_output_with_zero_exit_is_not_success(self):
+        self.frame.adb.shell.side_effect = None
+        self.frame.adb.shell.return_value = 'Failed to shutdown.'
+        self.frame.request_action('sleep', 'b' * 32)
+        for _ in range(3):
+            self.frame.tick()
+        self.assertTrue(self.frame.state['manual']['forced'])
+        self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
+
+    def test_failed_plug_off_retries_without_repeating_android_shutdown(self):
+        self.frame.request_action('sleep', 'b' * 32)
+        self.frame.tick()
+        self.advance(30)
+        self.POWER.set_power.side_effect = RuntimeError('plug unavailable')
+        self.frame.tick()
+        self.assertEqual(self.frame.state['power'], 'unknown')
+        recovered = self.recover()
+        self.POWER.set_power.side_effect = None
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.assertEqual(recovered.state['manual']['phase'], 'completed')
+
+    def test_scheduled_sleep_then_wake_even_after_restart_while_off(self):
+        self.now = self.now.replace(hour=22)
+        self.frame.tick()
+        self.advance(30)
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['source'], 'scheduled')
+        self.assertEqual(self.frame.state['power'], 'off')
+        self.now = self.now.replace(day=19, hour=7, minute=0, second=0)
+        frame = self.recover()
+        frame.tick()
+        frame.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_called_with(self.cfg['wyze_mac'], True)
+        self.advance(60)
+        frame.tick()
+        self.assertEqual(frame.state['manual']['phase'], 'completed')
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.assertEqual(self.POWER.set_power.call_count, 2)
+
+    def test_wake_button_works_after_explicit_power_off(self):
+        self.frame.state.update(power='off', power_paused=True)
+        self.frame.save()
+        self.wake()
+        self.assertFalse(self.frame.schedule_paused())
+
+    def test_missing_plug_fails_clearly_without_device_commands(self):
+        self.frame.cfg['wyze_mac'] = ''
+        with self.assertRaisesRegex(RuntimeError, 'Pair a Wyze'):
+            self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'failed')
+        self.assertIn('Pair a Wyze', self.frame.snapshot()['status']['error'])
+        self.frame.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_not_called()
+
+    def test_late_wake_holds_through_next_morning_until_sleep(self):
+        self.now = self.now.replace(hour=23)
+        self.wake()
+        self.now = self.now.replace(day=19, hour=7)
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_called_once()
+        self.now = self.now.replace(hour=22)
+        recovered.tick()
+        self.assertEqual(recovered.state['manual']['action'], 'sleep')
+        self.advance(30)
+        recovered.tick()
+        self.assertEqual(recovered.state['power'], 'off')
+
+    def test_sleep_override_with_scheduler_disabled_survives_next_day(self):
+        frame = self.recover(scheduled=False)
+        self.sleep(frame)
+        self.advance(86400)
+        recovered = self.recover(scheduled=False)
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_called_once()
+
+    def test_overnight_schedule_sleeps_then_wakes_at_evening_boundary(self):
+        self.cfg.update(wake='20:00', sleep='06:00')
+        frame = self.recover()
+        frame.tick()
+        self.advance(30)
+        frame.tick()
+        self.assertEqual(frame.state['power'], 'off')
+        self.now = self.now.replace(hour=20)
+        frame.tick()
+        self.POWER.set_power.assert_called_with(self.cfg['wyze_mac'], True)
+
+    def test_wake_crossing_sleep_boundary_does_not_launch(self):
+        self.now = self.now.replace(hour=21, minute=59, second=0)
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['action'], 'sleep')
+        self.assertFalse(any(args.args[:2] == ('am', 'start') for args in self.frame.adb.shell.call_args_list))
+
+    def test_slow_connect_crossing_boundary_does_not_initialize(self):
+        self.cfg['boot_delay_seconds'] = 0
+        frame = self.recover()
+        self.now = self.now.replace(hour=21, minute=59)
+        frame.request_action('wake', 'a' * 32)
+        frame.tick()
+        frame.adb.connect.side_effect = lambda: self.advance(60)
+        frame.tick()
+        self.assertEqual(frame.state['manual']['phase'], 'cancelled')
+        frame.adb.shell.assert_not_called()
+
+    def test_shutdown_crossing_wake_boundary_finishes_then_wakes(self):
+        self.now = self.now.replace(hour=6, minute=59, second=50)
+        self.frame.request_action('sleep', 'b' * 32)
+        self.frame.tick()
+        self.advance(30)
+        self.frame.tick()
+        self.assertEqual(self.frame.state['power'], 'off')
+        self.frame.tick()
+        self.POWER.set_power.assert_called_with(self.cfg['wyze_mac'], True)
+
+    def test_duplicate_busy_and_failed_journal_send_no_extra_commands(self):
+        self.frame.request_action('wake', 'a' * 32)
+        expiry = self.frame.state['override']['expires_at']
+        self.frame.request_action('wake', 'a' * 32)
+        with self.assertRaisesRegex(RuntimeError, 'already in progress'):
+            self.frame.request_action('sleep', 'b' * 32)
+        self.assertEqual(self.frame.state['override']['expires_at'], expiry)
+        self.frame.state = {}
+        with patch.object(self.frame, 'save', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.frame.request_action('wake', 'a' * 32)
+        self.assertEqual(self.frame.state, {})
+        self.POWER.set_power.assert_not_called()
+        self.frame.adb.connect.assert_not_called()
+
+    def test_dst_repeated_hour_does_not_undo_wake_or_sleep(self):
+        zone = ZoneInfo('America/Los_Angeles')
+        for boundary in ('wake', 'sleep'):
+            with self.subTest(boundary=boundary):
+                self.frame.cfg[boundary] = '01:30'
+                first = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+                second = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+                self.assertEqual(self.frame.schedule_event(first), self.frame.schedule_event(second))
+                self.assertEqual(self.frame.schedule_event(second)[0], boundary)
+                self.frame.cfg[boundary] = self.cfg[boundary]
+
+    def test_schedule_gap_starts_at_first_valid_minute(self):
+        zone = ZoneInfo('America/Los_Angeles')
+        self.frame.cfg['wake'] = '02:30'
+        before = datetime(2026, 3, 8, 1, 59, tzinfo=zone)
+        after = datetime(2026, 3, 8, 3, tzinfo=zone)
+        self.assertEqual(self.frame.schedule_event(before), ('sleep', after.timestamp()))
+        self.assertEqual(self.frame.schedule_event(after)[0], 'wake')
+
+    def test_scheduled_failure_remains_visible_and_does_not_restart_attempts(self):
+        self.frame.adb.connect.side_effect = RuntimeError('offline')
+        self.frame.tick()
+        self.advance(60)
+        for _ in range(5):
+            self.frame.tick()
+            self.advance(30)
+        self.assertEqual(self.frame.state['manual']['phase'], 'failed')
+        self.assertEqual(self.frame.snapshot()['status']['result'], 'scheduled_wake_failed')
+        recovered = self.recover()
+        recovered.tick()
+        recovered.adb.connect.assert_not_called()
+        self.POWER.set_power.assert_called_once()
+
+    def test_connection_errors_are_shown_on_dashboard_and_log_page(self):
+        import json
+        from webui import create_app
+        registry = c.FrameRegistry(dict(timezone='UTC', enabled=True, frames=[self.cfg]), self.data, [self.frame])
+        (self.data / 'web-auth.json').write_text(json.dumps(dict(id='test')))
+        client = create_app(registry.config, registry, self.data).test_client()
+        with client.session_transaction() as session:
+            session.update(account_id='test')
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        self.frame.adb.connect.side_effect = RuntimeError('offline')
+        for _ in range(3):
+            self.frame.tick()
+            self.advance(30)
+        for path in ('/', '/frames/frame/log'):
+            page = client.get(path)
+            self.assertIn(b'Wake attempt 3/5 failed', page.data)
+            self.assertIn(b'offline', page.data)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

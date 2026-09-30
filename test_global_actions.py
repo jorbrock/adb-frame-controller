@@ -19,6 +19,8 @@ class GlobalActionTests(unittest.TestCase):
         self.config = config()
         self.config['frames'].append({**self.config['frames'][0], 'name': 'bedroom',
                                       'address': '192.0.2.2:5555'})
+        for index, frame in enumerate(self.config["frames"]):
+            frame.update(wyze_mac=f"AABBCCDDEE{index:02X}", boot_delay_seconds=0)
         self.registry = c.FrameRegistry(self.config, self.data)
         (self.data / 'web-auth.json').write_text(json.dumps(dict(id='test')))
         self.app = create_app(self.config, self.registry, self.data)
@@ -62,39 +64,23 @@ class GlobalActionTests(unittest.TestCase):
             self.post(action)
             self.assertEqual(previous, [frame.state for frame in self.registry.frames.values()])
 
-    def test_global_buttons_use_each_frames_action_settings(self):
+    def test_global_buttons_use_each_frames_plug_and_include_off_frames(self):
         self.login()
-        http_frame = self.registry.frames['living-room']
-        adb_frame = self.registry.frames['bedroom']
-        http_frame.cfg.update(morning_action='undim', night_action='dim')
-        for morning_action in ('reboot', 'restart_app'):
-            adb_frame.cfg['morning_action'] = morning_action
-            for action, command in (('wake', 'undim'), ('sleep', 'dim')):
-                with self.subTest(morning_action=morning_action, action=action):
-                    for frame in (http_frame, adb_frame):
-                        frame.state = {}
-                        frame.adb = Mock()
-                        frame.adb.shell.return_value = 'Status: ok'
-                    with patch.object(c, 'urlopen') as request:
-                        request.return_value.__enter__.return_value.status = 200
-                        response = self.post(action)
-                        self.assertIn(b'requested for 2 frame(s)', response.data)
-                        for frame in (http_frame, adb_frame):
-                            frame.tick()
-                            self.assertEqual(frame.state['manual']['phase'], 'completed')
-                        request.assert_called_once_with(
-                            'http://192.0.2.1:53287/' + command, timeout=20)
-                    self.assertEqual(http_frame.adb.mock_calls, [])
-                    adb_frame.adb.connect.assert_called_once()
-                    adb_frame.adb.run.assert_not_called()
-                    if action == 'wake':
-                        adb_frame.adb.shell.assert_any_call(
-                            'am', 'start', '-W', '-n', adb_frame.cfg['component'])
-                    else:
-                        adb_frame.adb.shell.assert_any_call(
-                            'am', 'force-stop', adb_frame.cfg['package'])
-                        adb_frame.adb.shell.assert_any_call(
-                            'settings', 'put', 'system', 'screen_brightness', '0')
+        for action in ("wake", "sleep"):
+            with self.subTest(action=action), patch.object(c, "POWER") as power:
+                for frame in self.registry.frames.values():
+                    frame.state = {"power": "off", "power_paused": True}
+                    frame.adb = Mock()
+                    frame.adb.connect.side_effect = RuntimeError("powered off") if action == "sleep" else None
+                    frame.adb.shell.side_effect = lambda *args: "" if args[:2] == ("sh", "-c") else "Status: ok"
+                response = self.post(action)
+                self.assertIn(b'requested for 2 frame(s)', response.data)
+                for frame in self.registry.frames.values():
+                    frame.tick()
+                    frame.tick()
+                    self.assertEqual(frame.state['manual']['phase'], 'completed')
+                    power.set_power.assert_any_call(frame.cfg['wyze_mac'], action == "wake")
+                self.assertEqual(power.set_power.call_count, 2)
 
     def test_global_actions_skip_disabled_frames(self):
         frame = self.registry.frames['living-room']

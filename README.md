@@ -1,7 +1,7 @@
 # ADB Frame Controller v1.6.0
 
-A small Python + ADB container with a local web interface that stops ImmichFrame and sets screen brightness to zero
-at night, then reboots and explicitly launches the app each morning. It operates
+A small Python + ADB container with a local web interface that shuts down Android
+and cuts power through Wyze plugs each night, then powers on and restores ImmichFrame each morning. It operates
 independently of Immich, ImmichFrame's server, and Immich Kiosk; no Immich API key
 or changes to those containers are required.
 
@@ -15,12 +15,12 @@ tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior mu
   **Remove** to manage up to 50 frames without restarting the controller.
 - Set **Frame management** to **Disabled** in a frame's settings to preserve its
   configuration while stopping all ADB commands and device status checks. Manual
-  controls are disabled and all-frame actions skip it. Pending display requests are
+  controls are disabled and all-frame actions skip it. Pending app reset or soft reboot requests are
   cancelled and manual wake/sleep holds are cleared. The frame keeps its current
   display state. Re-enable management to resume normal operation with its existing
-  morning/reboot history. Finish any active power action before disabling management. Existing frames default to Enabled.
-- Frame forms cover name, ADB address, optional Wyze plug MAC and Run as root, app package/activity, wake/sleep times,
-  morning action, day brightness, boot delay, and night recheck interval.
+  schedule/reboot history. Finish any active power action before disabling management. Existing frames default to Enabled.
+- Frame forms cover name, ADB address, Wyze plug MAC and optional Run as root, app package/activity, wake/sleep times,
+  day brightness, and boot delay.
   Removal requires a confirmation page. Empty configurations are supported.
 - Settings are validated before saving. Busy frames and active manual actions
   reject edits/removal; stale forms cannot overwrite newer changes.
@@ -31,8 +31,9 @@ tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior mu
   with scheduling disabled. Launch retries do not repeat a completed cache trim;
   a new reset request does. The action uses the same 15-minute retry limit and
   busy protection as other manual controls.
-- **Wake frame** restores day brightness and launches the app without rebooting.
-  **Sleep frame** stops the app and sets brightness to zero while keeping ADB reachable.
+- **Wake frame** turns on the Wyze plug, waits the boot delay, then restores brightness
+  and starts ImmichFrame if it is not already running. **Sleep frame** attempts
+  Android shutdown before switching off the plug.
   Manual overrides and their expiry are shown on each card; see below for scheduling behavior.
 - Manual actions run independently per frame and are serialized with scheduled
   work. Manual reboot explicitly relaunches ImmichFrame after Android boots and the delay
@@ -43,10 +44,11 @@ tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior mu
 - Manual jobs persist across container restarts and normally have a 15-minute timeout.
   Hard reboot keeps retrying power restoration until it succeeds; the Android boot
   timeout starts after power is restored.
-  Wake/sleep connections and commands also retry within this timeout; pending
-  wake/sleep requests are cancelled if their schedule boundary passes first.
+  Wake makes at most five ADB/startup attempts, 30 seconds apart after the boot delay.
+  Pending wakes are cancelled when their schedule boundary passes. A shutdown
+  already in progress finishes cutting power before the next wake is processed.
   The actual reboot command is sent at most once per request. A successful manual
-  reboot that launches the app also fulfills the current morning window.
+  reboot that launches the app also fulfills the current schedule event.
 - A failure is shown in the frame's card. You can request another action after
   the pending job finishes or times out. For soft reboot, an unchanged boot ID is never considered
   a successful reboot. These statuses do not detect stalled photo progression.
@@ -67,14 +69,13 @@ tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior mu
 A manual wake holds the frame awake until **Sleep frame** is clicked or the next
 scheduled sleep event arrives. For example, with sleep set to 22:00, waking a
 frame at 23:00 keeps it awake until 22:00 the next day. During this hold the
-controller does not send the periodic night commands or run a morning reboot.
+controller leaves the frame powered on through the next morning wake event.
 A wake before midnight or after midnight uses the next sleep time in the frame's
 timezone; overnight schedules work the same way.
 
 Manual sleep holds night mode until **Wake frame** is clicked or the next
-scheduled wake event arrives. Night commands continue at the configured recheck
-interval while held asleep. Sleep uses brightness zero and app force-stop, not
-Android's network-disabling sleep key.
+scheduled wake event arrives. The plug stays off, with no ADB polling or night
+rechecks. The next wake restores power even across controller restarts.
 
 Overrides are saved before commands are sent and survive controller restarts.
 Rebooting a frame preserves its override and restores the appropriate mode.
@@ -91,7 +92,9 @@ Pair each smart plug with your account in the Wyze app first. In **Edit settings
 enter its **Plug device MAC** (`wyze_mac` in `frames.json`). Use the plug's MAC,
 not the frame's network MAC. Both 12- and 16-digit hexadecimal device MACs are
 accepted; colons, dashes and letter case are normalized. A plug can be assigned
-to only one frame. Leave the field empty for frames without a plug.
+to only one frame. Wake and sleep require a paired plug and configured Wyze
+credentials. Unpaired frames retain ADB reset/reboot controls; scheduled wake or
+sleep reports a pairing error without sending device commands.
 
 The dropdown attached to **Reboot frame** selects **Soft (ADB)**, the default,
 or **Hard (plug, 30s off)**. Soft reboot keeps using ADB. Hard reboot sends a Wyze
@@ -99,12 +102,13 @@ power-off command without needing ADB, waits at least 30 seconds after the call
 finishes, then turns the plug back on. The worker checks every five seconds, so
 restoration may take a few seconds longer. Both modes wait for Android boot and
 the configured boot delay, then restore the scheduled display mode or active
-manual override. Scheduled morning reboots continue to use ADB.
+manual override. Scheduled wakes use the plug-based wake sequence below.
 
 **Power off** switches off the plug, clears manual wake/sleep holds, and pauses
-all frame monitoring, scheduled work, and display commands. All-frame Wake/Sleep
-skip powered-off frames. This pause survives container restarts and schedule
-boundaries. **Power on** restores plug power, waits for Android, and applies the
+automatic frame monitoring and scheduled work until **Power on** or **Wake**.
+All-frame Wake/Sleep includes powered-off frames and skips disabled frames.
+This explicit Power off pause survives container restarts and schedule boundaries;
+ordinary **Sleep** still allows the next scheduled wake. **Power on** restores plug power, waits for Android, and applies the
 current schedule (or launches the slideshow when scheduling is paused), without
 sending another reboot. Frame management must be enabled to use power controls.
 
@@ -112,7 +116,7 @@ Power state shown in the UI is the last controller command, not a live electrica
 measurement. The controller does not poll Wyze while a frame is powered off or
 track changes made using the Wyze app, plug button, or Wyze schedules. Use these
 controller controls to keep the pause state synchronized; select **Power on** here
-after restoring power elsewhere. A failed/ambiguous off request is shown as
+or **Wake** after restoring power elsewhere. A failed/ambiguous off request is shown as
 unknown power and also pauses device commands until power is restored.
 
 Hard reboot's power restoration is journaled before switching off. If the
@@ -159,14 +163,14 @@ file. Invalid saved settings fail validation instead of being discarded.
 in `frames.json`). Enable it for frames that require and support `adb root`. Before
 manual or scheduled commands, the controller requests root, waits for ADB to
 reconnect, and verifies root access. If elevation fails, the action reports an
-error without continuing. Leave it unchecked for frames that use normal ADB
+error; Sleep falls back to cutting plug power if ADB/root is unavailable. Leave it unchecked for frames that use normal ADB
 permissions. Unchecking it stops requesting root; it does not run `adb unroot`.
 
 Changes apply to live workers. Adding a frame while scheduling is enabled can
-immediately start its morning sequence or apply night mode. Edits preserve reboot
-history, including when renaming a frame: a completed morning sequence does not
+immediately wake or shut down the frame. Edits preserve schedule and reboot
+history, including when renaming a frame: a completed schedule event does not
 run again just because settings changed. App and brightness changes take effect
-on the next app launch; schedule changes are evaluated on the next worker tick.
+on the next wake or app launch; schedule changes are evaluated on the next worker tick.
 An active manual action must finish, expire, or time out before editing or removal.
 Removing a frame stops future commands without changing its current display.
 Its state/status files are retained; adding it again under the same name restores
@@ -203,130 +207,77 @@ controller is stopped, or add the frames through the web UI.
 
 ## Behavior
 
-- Independent worker per frame; one unreachable device does not block the others.
-- Per-frame local wake/sleep times, using an IANA timezone with daylight saving time.
-- By default at night (`night_action: stop_app`): `am force-stop PACKAGE`, set `screen_brightness_mode` to `0`
-  (manual), then set `screen_brightness` to `0`. Android stays awake for network ADB.
-  Repeats every five minutes by default to handle incidental app starts or brightness changes.
-- Select **Dim via ImmichFrame HTTP** (`night_action: dim`) to keep ImmichFrame
-  open and send `GET http://HOST:53287/dim` at night, including night rechecks and
-  manual Sleep. HOST comes from the frame's ADB address.
-- Select **Undim via ImmichFrame HTTP** (`morning_action: undim`) to send
-  `GET http://HOST:53287/undim` once per wake window, without ADB, cache trimming,
-  boot delay, or app restart. Pair this with HTTP dim: undim cannot start a stopped
-  app. ImmichFrame must already be running and port 53287 reachable from the
-  controller. Failed HTTP requests retry; completion persists across restarts.
-  These endpoints are documented in [ImmichFrame's remote control guide](https://immichframe.dev/docs/getting-started/apps).
-  Individual and all-frame Wake/Sleep buttons use each frame's morning/night
-  HTTP option when selected; otherwise they launch/stop the app via ADB as before.
-  Reset app and Reboot retain their existing behavior. A manual reboot at night launches ImmichFrame before applying HTTP dim.
-- In reboot or restart-app morning mode, force-stop ImmichFrame and run
-  `pm trim-caches 999G` before the reboot, or before app launch in
-  `restart_app` mode. This requests a full trim of eligible Android caches across
-  apps; cached photos may need to download again. Allow up to 120 seconds for the
-  command. Reported failures retry; a completed trim is persisted per wake window
-  so launch retries and controller restarts do not repeat it. Manual Reset app also runs this cleanup on demand.
-- In reboot mode: one reboot attempt per wake window, reconnect, confirm the
-  kernel boot ID changed, wait for `sys.boot_completed=1`, then send
-  `setprop service.bootanim.exit 1` to dismiss a stuck boot animation (also applied
-  to manual reboots). Allow an additional
-  60 seconds, wake the screen with keycode 224, set manual brightness to
-  `day_brightness` (default `128`, configurable per frame from `1` to `255`),
-  then explicitly launch the app. Daytime manual reboots restore this brightness too.
-- Persisted state prevents another reboot in the same wake window after a
-  container restart. A failed/ambiguous reboot is not automatically repeated.
-  Connection and launch failures retry every 30 seconds.
-- The scheduler catches up after downtime. Enabling or first starting it during
-  the day immediately begins that day's configured morning action.
-  Starting it at night immediately applies night mode. UI schedule changes apply live.
-- Spring DST gaps take effect at the first available time after the scheduled
-  boundary. Repeated fall hours share one wake-window date and do not add a reboot.
-- JSON status files, console logs (stdout/stderr), and a Docker scheduler heartbeat health check.
-  Compose inherits the host's default logging driver, allowing your existing
-  container log collector to collect the console output.
-- Non-root container, no privileged mode, Docker socket, USB access, or host networking
-  required. Port 8080 serves the optional web UI. LAN routing to each frame is required.
+- Each frame has an independent worker and local wake/sleep times in the configured timezone.
+- Sleep first connects over ADB and attempts `svc power shutdown`, falling back to
+  `reboot -p` if the first command fails. Failed command pairs are tried at most
+  three times. If ADB is unavailable or all three attempts fail, the controller
+  forces power off through Wyze. When a command is accepted, it allows 30 seconds
+  for shutdown before switching off the plug. Wyze failures remain visible and
+  retry within the job timeout.
+- Wake turns on the Wyze plug, waits `boot_delay_seconds` (default 60, range 0–600),
+  then connects over ADB. There are five total connection/startup attempts, spaced
+  30 seconds apart. After the third failure an error appears in the UI, frame
+  history, and service log; attempts four and five still run. A fifth failure ends
+  the job and remains visible until another action. Wake never sends an ADB reboot.
+- Once connected, wake sends `setprop service.bootanim.exit 1`, sets manual
+  brightness to `day_brightness` (default 128, range 1–255), and checks the configured
+  app's main process with `pidof`. It launches the configured activity only if the
+  app is absent. ImmichFrame can be the Home app; an automatically started instance
+  is preserved. Routine wakes do not force-stop the app or trim caches.
+- Boot delays, retries, shutdown progress, overrides, and schedule events persist
+  across controller restarts. Successful sleep leaves scheduling active so the
+  next wake can turn on an off frame. A completed or failed event is not repeatedly
+  issued during the same schedule window. Use Wake again for a manual retry.
+- The scheduler catches up after downtime: daytime starts trigger wake and nighttime
+  starts trigger sleep. Manual overrides defer these events until their saved boundary.
+  Overnight schedules and daylight-saving boundaries are supported.
+- `morning_action`, `night_action`, and `night_recheck_seconds` are retired. Existing
+  values are ignored when loading settings and removed on the next UI settings save.
+  HTTP dim/undim and the old scheduled reboot/cache-trim paths have been removed.
+- JSON status files, per-frame history, and console logs report actions and errors.
+  The Docker heartbeat checks the controller process, not physical photo progression.
+- The container needs LAN access to each frame's ADB port and internet access to Wyze.
+  It does not require privileged mode, USB access, a Docker socket, or host networking.
+
+Android's shutdown commands are implemented in the AOSP
+[`svc power` source](https://android.googlesource.com/platform/frameworks/base/+/0ef403e/cmds/svc/src/com/android/commands/svc/PowerCommand.java)
+and [`reboot -p` source](https://chromium.googlesource.com/aosp/platform/system/core/+/master/reboot/reboot.c).
+Firmware permissions and physical shutdown behavior still need verification on each model.
 
 ## 1. Prove these prerequisites on ONE frame
 
-Use its reserved IP and actual ADB port. Commands below assume `192.168.30.200:5555`.
+Pair its Wyze plug, configure the controller's Wyze credentials, and reserve the
+frame's IP address. Confirm the frame starts automatically when the plug restores
+power and that wireless ADB stays enabled and authorized after a full power cycle.
+`adb tcpip 5555` can be temporary on some firmware; resolve that before enabling
+scheduled wake/sleep. The controller cannot reconnect to a disabled ADB service.
 
-Install [Discreet Launcher](https://github.com/falzonv/discreet-launcher) on
-**each frame** and make it the default Home app before enabling the schedule.
-Download its APK from the project's [releases](https://github.com/falzonv/discreet-launcher/releases),
-then install the downloaded file (replace the local path below):
-
-```bash
-adb connect 192.168.30.200:5555
-adb -s 192.168.30.200:5555 install -r /path/to/discreet-launcher.apk
-adb -s 192.168.30.200:5555 shell am start -a android.settings.HOME_SETTINGS
-```
-
-On the frame, select **Discreet Launcher** as the default Home app. If that settings
-screen is unavailable, open Android Settings → Apps → Default apps → Home app,
-or press Home and select Discreet Launcher with **Always** when prompted.
-Configure a black wallpaper and confirm Home shows Discreet Launcher.
-ImmichFrame must not be the default Home app: Android may otherwise relaunch it
-when the controller force-stops it.
-
-Read the current brightness and choose a daytime value for `day_brightness` in
-that frame's configuration. The controller uses manual brightness day and night;
-it does not restore adaptive brightness or automatically save the previous value.
-
-```bash
-adb -s 192.168.30.200:5555 shell pm list packages
-adb -s 192.168.30.200:5555 shell settings get system screen_brightness
-adb -s 192.168.30.200:5555 shell am force-stop com.immichframe.immichframe
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness 0
-```
-
-Confirm the display is dark and ImmichFrame stays stopped. Leave it in this state
-for a meaningful interval (ideally overnight), then reconnect and test daytime
-brightness/start. Replace `128` with your chosen daytime brightness:
+Use the frame's actual address and installed package/activity. With the plug on
+and Android booted, verify:
 
 ```bash
 adb connect 192.168.30.200:5555
-adb -s 192.168.30.200:5555 shell input keyevent 224
+adb -s 192.168.30.200:5555 shell setprop service.bootanim.exit 1
 adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
 adb -s 192.168.30.200:5555 shell settings put system screen_brightness 128
+adb -s 192.168.30.200:5555 shell pidof com.immichframe.immichframe
+```
+
+Choose a suitable daytime brightness. If ImmichFrame is not already running, test:
+
+```bash
 adb -s 192.168.30.200:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
-Test a reboot, reconnect after the frame has booted, then check:
+The launch should report `Status: ok`. ImmichFrame may be the default Home app,
+or you may use a separate launcher such as Discreet Launcher. Disable conflicting
+Android sleep, vendor power schedules, and app schedules during the wake window.
 
-```bash
-adb -s 192.168.30.200:5555 reboot
-# Wait for the device to boot before the next commands.
-adb connect 192.168.30.200:5555
-adb -s 192.168.30.200:5555 shell getprop sys.boot_completed
-adb -s 192.168.30.200:5555 shell cat /proc/sys/kernel/random/boot_id
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness 128
-adb -s 192.168.30.200:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
-```
-
-`sys.boot_completed` must return `1`, and the activity start should report
-`Status: ok`. The package/activity above are the ones documented by ImmichFrame;
-change the configuration if your APK uses different names.
-
-**Wireless ADB must survive reboot.** Enabling TCP ADB with `adb tcpip 5555` can
-be temporary. Frameo persistence varies by firmware; some require USB again
-after every reboot. This container cannot reconnect to a disabled ADB service.
-Do not enable scheduled reboot until you have verified persistence. You can use
-`"morning_action": "restart_app"` instead, which wakes and restarts the app without
-rebooting, but ADB must still remain reachable overnight.
-
-The controller does not send keycode 223 (SLEEP): on some frame firmware it also
-makes network ADB unreachable until a physical reboot. Brightness zero works on
-the tested frames, but other firmware may clamp it to a visible minimum. Confirm
-the physical result on every model; a black launcher alone does not turn off the
-backlight. Keep Android's automatic sleep/screensaver disabled in the device
-settings so it does not independently put the frame to sleep overnight.
-
-Observe one full night/morning cycle; disable conflicting app schedules or kiosk
-tools where appropriate. The controller sends commands but does not assert the
-physical display is off.
+With scheduling paused, test **Sleep frame** and confirm Android shuts down and
+the plug switches off. Then use **Wake frame** and verify automatic boot, ADB
+connection, the chosen brightness, and advancing photos. Increase the boot delay
+if the frame needs longer before ADB is ready. Observe a full scheduled night and
+morning cycle before enabling the remaining frames.
 
 ## 2. Prepare TrueNAS storage and build
 
@@ -450,7 +401,7 @@ python /app/controller.py status
 adb devices -l
 ```
 
-Logs record night-mode commands, reboot requests, confirmed launches, and errors.
+Logs record shutdowns, plug commands, wake progress, reboot requests, and errors.
 Status shows each frame's latest result and timestamp. In the web UI, select
 **View full log** below a frame's latest result to browse its recorded results,
 timestamps, and errors, newest first (50 per page). **Refresh latest** loads new
@@ -466,25 +417,18 @@ so their disk usage grows over time. This is controller result history, not Andr
 Docker health only confirms
 the scheduler is running; it does not mean every frame is reachable or advancing
 photos. Docker also does not restart a container merely because it is unhealthy.
-Frame errors are retried by the scheduler; process exit uses the restart policy.
+Wake failures have a five-attempt limit; process exit uses the restart policy.
 
-The controller does not monitor daytime slideshow progression. Daily reboot is
-preventive maintenance, not freeze detection. It cannot recover a device whose
-ADB service, Wi-Fi, or kernel has stopped responding; that needs physical power
-cycling or a separate controllable power outlet.
+The controller does not monitor daytime slideshow progression. Nightly power cycles
+provide routine recovery. Use **Hard reboot** if ADB or Android becomes unresponsive;
+this requires a reachable Wyze plug. A failed soft reboot is never automatically
+reissued within the same request. Do not delete state to fix connection failures.
 
-If the reboot command was lost, status continues reporting an unchanged boot ID.
-There is deliberately no second automated reboot that wake window. Reboot that
-one frame manually with `adb -s IP:PORT reboot`; once its boot ID changes, the
-controller can finish startup. Do not delete state to fix connection failures.
-
-To reboot a frame from your browser, sign in and use its Reboot frame button.
-Use **Wake frame** to launch the app and restore brightness without rebooting,
-or **Sleep frame** to stop the app and dim the display. Use **Wake all frames** or
-**Sleep all frames** above the frame cards to request the same action for every
-configured frame. Busy frames are skipped and any errors are shown by frame; other
-frames still receive the request. Global actions follow the same override rules. Manual wake pauses night
-rechecks until the next scheduled sleep time or a manual sleep request.
+Use **Wake frame** to turn on power and restore the display, or **Sleep frame** to
+shut down Android and cut plug power. **Wake all frames** and **Sleep all frames**
+request the same sequence for every enabled frame, including off frames. Busy or
+unpaired frames report individual errors while other frames still receive requests.
+Manual wake holds until the next sleep event; manual sleep holds until the next wake.
 
 Use DHCP reservations. On UniFi, permit the TrueNAS container's effective source
 IP (normally the TrueNAS LAN IP with bridge networking) to reach only the frames'
@@ -548,20 +492,12 @@ python -m pip install -r requirements.txt
 python -m unittest -v
 ```
 
-Tests cover wake/sleep boundaries, overnight windows, repeated DST hours, reboot
-deduplication after a failed command/container restart, retrying a failed launch
-without another reboot, dimming despite force-stop failure, corrupt state, and
-app-only morning mode. Additional tests cover authenticated access, CSRF, password
-changes, logout, escaped device errors, duplicate manual requests, concurrent
-operation protection, restart recovery, nighttime behavior, and manual-job timeouts.
-Configuration tests cover authenticated add/edit/remove flows, validation,
-loading frame settings exclusively from the data directory, environment defaults,
-boolean/timezone validation, ignored legacy config files, empty starts, rename
-history, storage failures, stale forms, concurrent edits, and live worker
-startup/removal. Manual display tests cover wake holds through the following day,
-manual sleep, restart persistence, reboot interaction, expired/failed requests,
-overnight schedules, DST gaps/repeated hours, CSRF, and busy-action protection.
-They do not validate a Docker build or real frame firmware.
+Tests use mocked ADB and Wyze calls to cover shutdown retries and fallback,
+boot-delay timing, five-attempt wake limits, third-failure errors, home-app detection,
+schedule and override boundaries, restart recovery, and plug failure handling.
+They also cover manual reboot/reset, authentication, CSRF, settings validation,
+configuration persistence, concurrent requests, and frame history. They do not
+validate a Docker build or real frame firmware.
 
 ## References
 

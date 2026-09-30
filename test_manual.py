@@ -19,9 +19,12 @@ class ManualTests(unittest.TestCase):
         self.clock = context.start()
         self.clock.now.return_value = datetime(2026, 9, 18, 12, tzinfo=ZoneInfo("UTC"))
         self.addCleanup(context.stop)
+        power = patch.object(c, "POWER")
+        self.power = power.start()
+        self.addCleanup(power.stop)
         self.cfg = dict(name="frame", address="192.0.2.1:5555", package="com.example.frame",
                         component="com.example.frame/.MainActivity", wake="07:00", sleep="22:00",
-                        morning_action="reboot", boot_delay_seconds=0, night_recheck_seconds=300)
+                        wyze_mac="AABBCCDDEEFF", boot_delay_seconds=0)
 
     def frame(self, scheduled=True):
         frame = c.Frame(self.cfg, "UTC", scheduled)
@@ -143,7 +146,7 @@ class ManualTests(unittest.TestCase):
             return "1"
         frame.adb.shell.side_effect = shell
         frame.tick()
-        self.assertEqual(frame.state["manual"]["phase"], "cancelled")
+        self.assertEqual(frame.state["manual"]["action"], "sleep")
         self.assertFalse(any(c.args[:2] == ("am", "start")
                              for c in frame.adb.shell.call_args_list))
 
@@ -173,17 +176,18 @@ class ManualTests(unittest.TestCase):
         recovered.tick()
         self.assertEqual(recovered.state["manual"]["phase"], "completed")
 
-    def test_night_reboot_returns_to_zero_brightness(self):
+    def test_night_reboot_returns_to_powered_off(self):
         self.clock.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo("UTC"))
         frame = self.frame()
         frame.request_reboot("a" * 32)
         frame.tick()
         frame.adb.boot_id.return_value = "new-boot"
         frame.tick()
-        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness_mode", "0")
-        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "0")
-        self.assertFalse(any(call.args == ("input", "keyevent", "223")
-                             for call in frame.adb.shell.call_args_list))
+        frame.adb.shell.assert_any_call("svc", "power", "shutdown")
+        with patch.object(c.time, "time", return_value=frame.state["manual"]["power_off_at"]):
+            frame.tick()
+        self.power.set_power.assert_called_once_with("AABBCCDDEEFF", False)
+        self.assertEqual(frame.state["manual"]["phase"], "completed")
         self.assertFalse(any(call.args[:2] == ("am", "start") for call in frame.adb.shell.call_args_list))
 
     def test_scheduler_disabled_still_allows_manual_reboot(self):

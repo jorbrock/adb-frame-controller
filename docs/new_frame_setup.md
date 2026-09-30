@@ -10,7 +10,9 @@ No firmware flashing or ADB-enabling procedure is included.
 You will need a computer with [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools)
 (`adb`), a USB data cable for the initial setup and app installs, access to the
 frame's touchscreen, and a Docker/TrueNAS host for the
-controller. You also need an existing Immich library and an ImmichFrame server;
+controller, plus a paired Wyze plug for each frame. Configure the Wyze account
+credentials described in the [README](../README.md#wyze-plug-power-and-hard-reboot).
+You also need an existing Immich library and an ImmichFrame server;
 step 4 covers preparing that server if it is not running yet.
 
 Replace these example addresses throughout:
@@ -55,7 +57,9 @@ A returned model name confirms shell access. Keep USB connected through the app
 installs and display checks in steps 3–5. Wireless ADB is set up in step 6, just
 before preparing the controller container.
 
-## 3. Install Discreet Launcher and make Home blank
+## 3. Optionally install Discreet Launcher
+
+Skip this step if you will use ImmichFrame as the default Home app.
 
 Download the APK from [Discreet Launcher releases](https://github.com/falzonv/discreet-launcher/releases).
 On your **computer**, install it and open Android's Home app selection:
@@ -87,10 +91,9 @@ On your **computer**, test Home:
 adb shell input keyevent 3
 ```
 
-**Keep Discreet Launcher as the default Home app after installing ImmichFrame.**
-The controller force-stops ImmichFrame at night; making ImmichFrame Home can cause
-Android to relaunch it immediately. For this setup, skip the upstream ImmichFrame
-instructions that make ImmichFrame the default launcher or a screensaver.
+ImmichFrame can be the default Home app if you want it to start automatically.
+The controller checks whether it is already running after boot and preserves that
+instance. Discreet Launcher remains an alternative Home app.
 
 In Android/device settings, disable automatic sleep, screensavers, and any vendor
 power schedule that would suspend Wi-Fi or restart a slideshow independently.
@@ -100,8 +103,8 @@ You can open Android Settings from your computer if the launcher hides it:
 adb shell am start -a android.settings.SETTINGS
 ```
 
-A black wallpaper provides the blank fallback screen. The controller separately
-sets brightness to zero at night; check the actual backlight behavior on your model.
+A black wallpaper provides the fallback screen while booting. At night the
+controller shuts down Android and cuts power using the frame’s Wyze plug.
 
 ## 4. Install and configure ImmichFrame
 
@@ -252,8 +255,7 @@ adb shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
 Swipe down to settings, enable **WebView**, save/apply, and check that photos and
-any configured overlays render and advance. Confirm Home still opens Discreet
-Launcher. Keep USB attached for step 5.
+any configured overlays render and advance. Confirm Home opens your chosen launcher. Keep USB attached for step 5.
 
 #### Restore the original if the replacement fails
 
@@ -275,35 +277,20 @@ and run `adb reboot`. If the on-device backup is missing, stage your computer's
 If Android no longer boots or USB ADB is unavailable, recovery is firmware-specific;
 these shell commands require a working Android ADB session.
 
-## 5. Test blank Home and display control over USB
+## 5. Test brightness and app launch over USB
 
-With USB still connected, run these commands on your **computer**. First record
-the current brightness so
-you can choose a daytime value (the controller accepts 1–255):
+With USB still connected, run these commands on your **computer**. Read the current
+brightness and select a suitable daytime value from 1–255, replacing `128` below:
 
 ```bash
 adb shell settings get system screen_brightness
-adb shell input keyevent 3
-adb shell am force-stop com.immichframe.immichframe
-adb shell settings put system screen_brightness_mode 0
-adb shell settings put system screen_brightness 0
-```
-
-Confirm the screen is dark and ImmichFrame stays stopped. This checks display
-behavior; the wireless connection and overnight reachability are tested in step 6.
-Do not send Android's sleep key (keycode 223); it can make network ADB unreachable.
-
-Restore the display, using your preferred brightness instead of `128`:
-
-```bash
-adb shell input keyevent 224
 adb shell settings put system screen_brightness_mode 0
 adb shell settings put system screen_brightness 128
 adb shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
-Expect `Status: ok` and an advancing slideshow. Leave the frame connected by USB
-for the next step.
+Expect `Status: ok` and an advancing slideshow. ImmichFrame may remain the Home app;
+nightly sleep shuts down the entire device. Leave USB connected for the next step.
 
 ## 6. Set up and test wireless ADB
 
@@ -331,59 +318,35 @@ use `adb -s IP:PORT` to target the frame's wireless connection. If TCP ADB
 was already enabled, skip `tcpip` and start with `adb connect`. These steps follow
 Android's [ADB connection documentation](https://developer.android.com/tools/adb).
 
-### Check overnight reachability
+### Check wireless ADB after a full power cycle
 
-With USB unplugged, repeat the night commands over the wireless connection:
+With USB unplugged, confirm the frame is reachable wirelessly, then request shutdown:
 
 ```bash
-adb -s 192.168.30.200:5555 shell input keyevent 3
-adb -s 192.168.30.200:5555 shell am force-stop com.immichframe.immichframe
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
-adb -s 192.168.30.200:5555 shell settings put system screen_brightness 0
+adb -s 192.168.30.200:5555 shell svc power shutdown
 ```
 
-Leave the frame dark for a meaningful interval, ideally overnight, then reconnect
-and restore it. Replace `128` with your tested daytime brightness:
+Allow Android to finish shutting down, switch off its Wyze plug, and turn the plug
+on again. Verify that the frame starts automatically without pressing its power
+button. Wait for Android and Wi-Fi, then reconnect:
 
 ```bash
 adb connect 192.168.30.200:5555
-adb -s 192.168.30.200:5555 shell getprop ro.product.model
-adb -s 192.168.30.200:5555 shell input keyevent 224
+adb -s 192.168.30.200:5555 shell setprop service.bootanim.exit 1
 adb -s 192.168.30.200:5555 shell settings put system screen_brightness_mode 0
 adb -s 192.168.30.200:5555 shell settings put system screen_brightness 128
+adb -s 192.168.30.200:5555 shell pidof com.immichframe.immichframe
+```
+
+If ImmichFrame did not start automatically, launch it:
+
+```bash
 adb -s 192.168.30.200:5555 shell am start -W -n com.immichframe.immichframe/.MainActivity
 ```
 
-Require working ADB access and an advancing slideshow without reconnecting USB.
-
-### Check wireless ADB after reboot
-
-**TCP ADB may not survive reboot.** `adb tcpip 5555` does not guarantee a persistent
-firmware setting. With USB still unplugged, record the boot ID and reboot:
-
-```bash
-adb -s 192.168.30.200:5555 shell cat /proc/sys/kernel/random/boot_id
-adb -s 192.168.30.200:5555 reboot
-```
-
-Wait for Android and Wi-Fi to start, then run:
-
-```bash
-adb connect 192.168.30.200:5555
-adb -s 192.168.30.200:5555 shell getprop sys.boot_completed
-adb -s 192.168.30.200:5555 shell cat /proc/sys/kernel/random/boot_id
-adb -s 192.168.30.200:5555 shell input keyevent 3
-```
-
-Require `sys.boot_completed` to return `1`, a changed boot ID, and a blank
-Discreet Launcher Home screen. Repeat the wireless display-restore commands above
-and confirm ImmichFrame retained its settings.
-
-If wireless ADB stops listening, reconnect USB and repeat
-`adb tcpip 5555`, then reconnect wirelessly and unplug USB again. Choose **Restart app only**
-in step 9 until your firmware's persistent network ADB configuration is established.
-That avoids scheduled reboots but does not solve loss of ADB after a power outage
-or manual reboot.
+Require working wireless ADB and an advancing slideshow without reconnecting USB.
+**TCP ADB must survive power cycles.** `adb tcpip 5555` can be temporary; establish
+persistent network ADB on your firmware before enabling the nightly schedule.
 
 ### Alternative: Android paired wireless debugging
 
@@ -494,10 +457,9 @@ web URL in your **browser**, sign in, and select **Add frame**.
 | Activity component | `com.immichframe.immichframe/.MainActivity` |
 | Wake time | `07:00` |
 | Sleep time | `22:00`; must differ from wake time |
-| Morning action | **Reboot frame** only after the reboot test passes; otherwise **Restart app only** |
+| Plug device MAC | The paired Wyze plug’s device MAC; configure Wyze credentials in Compose first |
 | Day brightness | `128`, or your tested value from 1–255 |
-| Boot delay (seconds) | `60`; extra delay after Android reports boot complete, allowed range 0–600 |
-| Night recheck (seconds) | `300`; repeat night commands every five minutes, allowed range 30–3600 |
+| Boot delay (seconds) | `60`; delay after plug power-on before the first ADB connection, allowed range 0–600 |
 
 Times use the controller's global `TZ`, shown on the form. Select **Add frame** to
 save. Settings persist in `/data/frames.json` and apply without a restart. Use
@@ -516,8 +478,8 @@ With scheduling paused:
 
 1. Click **Wake frame**. Wait for completion and verify the chosen brightness and
    an advancing slideshow on the physical frame.
-2. Click **Sleep frame**. Verify the display is dark and stays dark. From the
-   container, repeat the ADB model query to confirm network access remains alive.
+2. Click **Sleep frame**. Verify Android shuts down and the Wyze plug switches off.
+   ADB is expected to be unavailable while power is off.
 3. Click **Wake frame** again and confirm recovery. If reboot persistence passed,
    test the UI's reboot action while awake and wait through boot plus the configured
    delay. Confirm ImmichFrame launches again.
@@ -535,16 +497,16 @@ docker compose -f docker-compose.yaml up -d
 ```
 
 Confirm the UI says **Schedule enabled**. Enabling scheduling during daytime can
-immediately run the morning action, including a reboot; enabling it at night can
-immediately apply night mode. Manual wake/sleep overrides can defer scheduled
+immediately turn on the plug and restore the display; enabling it at night can
+immediately shut down Android and switch off the plug. Manual wake/sleep overrides can defer scheduled
 behavior: wake holds until the next sleep event, and sleep holds until the next
 wake event. Overrides persist across container restarts, and existing override
 expiry times are not changed by editing a schedule. Allow those overrides to
 expire when evaluating the first automatic cycle.
 
-Observe one full night/morning cycle. At night, require a dark display with
-working wireless ADB. In the morning, require the intended brightness and photos
-advancing after the configured morning action. Back up the controller data volume
+Observe one full night/morning cycle. At night, require the Wyze plug to be off.
+In the morning, require automatic boot, wireless ADB, the intended brightness,
+and advancing photos. Back up the controller data volume
 and Compose file; also back up the separate ImmichFrame configuration volume.
 
 ## Troubleshooting
@@ -554,9 +516,9 @@ and Compose file; also back up the separate ImmichFrame configuration volume.
 | `unauthorized` from the container | Restore visible brightness from the computer, accept the container's prompt on the frame, and reconnect. Verify the shell runs as UID 3019 with `HOME=/data`. |
 | `offline` or connection refused | Disconnect/reconnect that address with `adb disconnect IP:PORT` and `adb connect IP:PORT`; check IP, port, Wi-Fi, routing, and whether reboot disabled TCP ADB. |
 | Computer connects but container cannot | Check Docker-host routing/firewalls to the frame and authorize the container's own key. A successful ping alone does not prove the ADB port is reachable. |
-| Home returns to a vendor slideshow or ImmichFrame | Re-select Discreet Launcher as default Home; check firmware/vendor auto-start behavior and app schedules. Repeat the Home/reboot test before enabling scheduling. |
-| Blank Home still glows at night | Confirm brightness mode is manual and brightness is zero. Some panels retain a visible minimum backlight; the controller cannot guarantee darkness on every model. |
+| Home returns to a vendor slideshow | Choose ImmichFrame or Discreet Launcher as Home; check vendor auto-start behavior. |
+| Frame stays on at night | Check the paired Wyze MAC, account credentials, plug connectivity, controller result, and manual override. |
 | ImmichFrame cannot load photos | Verify its server URL and client secret, server-to-Immich access, account/API key, and selected albums. On older frames, try disabling WebView. |
 | `Activity ... does not exist` | Confirm the installed APK's package/activity and update the controller form to match. |
-| Frame sleeps but cannot be reached later | Disable Android sleep/screensavers and vendor power schedules; repeat the overnight ADB test. |
+| Frame cannot be reached after wake | Verify the plug turns on, the frame boots automatically, and TCP ADB survives power loss; increase the boot delay if necessary. |
 | Schedule seems inactive | Check `Schedule enabled`, the global timezone, frame action results, and manual override expiry. For Compose logs use `docker compose -f docker-compose.yaml logs --tail=100 frame-controller`. |
