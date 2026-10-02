@@ -1,7 +1,8 @@
 # Changelog
 
 ## v2.0.0
-
+- Include `wyze_power.py` in the Docker build context to fix the missing-file
+  error when building the container.
 - Pair a Wyze smart plug to each frame by device MAC, with shared credentials
   supplied through Docker Compose environment variables.
 - Replace scheduled and manual wake/sleep with Wyze power sequences. Sleep tries

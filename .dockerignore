@@ -3,6 +3,7 @@
 !frame_log.py
 !Dockerfile
 !webui.py
+!wyze_power.py
 !requirements.txt
 !templates/
 !templates/**
