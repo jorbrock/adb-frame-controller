@@ -1,4 +1,4 @@
-# ADB Frame Controller v2.0.0
+# ADB Frame Controller v2.1.0
 
 A small Python + ADB container with a local web interface that shuts down Android
 and cuts power through Wyze plugs each night, then powers on and restores ImmichFrame each morning. It operates
@@ -144,12 +144,14 @@ internet access to Wyze. Set credentials in the `environment:` block of
 | `WYZE_KEY_ID` | API key ID from the [Wyze developer portal](https://developer-api-console.wyze.com/#/apikey/view). |
 | `WYZE_API_KEY` | API key from the same portal. |
 | `WYZE_TOTP_KEY` | Optional authenticator setup secret for accounts using TOTP MFA. Interactive SMS/email MFA is unsupported. |
-| `WYZE_ACCESS_TOKEN` | Alternative to email/password/API credentials; takes precedence when set. |
-| `WYZE_REFRESH_TOKEN` | Refresh token accompanying the access token, required for automatic renewal in token mode. |
 
-The SDK session is shared across frames and reused; expired access tokens are
-refreshed. Login errors back off for one minute. Credentials and tokens remain
-in the environment and SDK memory, not frame settings or frame logs. Without
+The application logs in on the first power command and caches the returned access
+and refresh tokens in a shared, in-memory SDK client for all frames. Expired access
+tokens are refreshed automatically; if refresh is rejected, it logs in again using
+the configured credentials. Restarting the application clears the cache and the
+next power command logs in again. Login errors back off for one minute. Credentials
+stay in the environment; tokens are kept in memory, never in frame settings or
+frame logs. Access and refresh token configuration variables are no longer used. Without
 Wyze credentials, ordinary ADB operation remains available. Rebuild the image
 with the updated requirements and recreate the container after configuring the
 variables. No frame settings migration is required.
@@ -294,7 +296,7 @@ These commands require appropriate host permissions:
 mkdir -p /mnt/tank/apps/frame-controller/data
 chown 3019:3019 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
-docker build -t frame-controller:2.0.0 .
+docker build -t frame-controller:2.1.0 .
 ```
 
 The image build requires internet access for the Python base image, Debian ADB
@@ -379,7 +381,7 @@ If an older image reports `python: can't open file '/app/controller.py':
 [Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
 
 ```bash
-docker build --no-cache -t frame-controller:2.0.0 .
+docker build --no-cache -t frame-controller:2.1.0 .
 ```
 
 Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
@@ -388,7 +390,7 @@ does not replace its image. You can check the rebuilt image without starting any
 frame workers or mounting the data volume:
 
 ```bash
-docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.0.0 -c "import controller, webui; print('Application readable')"
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.1.0 -c "import controller, webui; print('Application readable')"
 ```
 
 The host data dataset separately needs read/write access for UID/GID `3019:3019`,

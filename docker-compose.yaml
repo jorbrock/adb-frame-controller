@@ -3,7 +3,7 @@
 #   - /mnt/BrockNetPoolSSD/AppConfigs/AdbFrameController/docker-compose.yaml
 services:
   frame-controller:
-    image: frame-controller:2.0.0
+    image: frame-controller:2.1.0
     pull_policy: never
     restart: unless-stopped
     init: true
@@ -20,9 +20,6 @@ services:
       WYZE_KEY_ID: "${WYZE_KEY_ID:-}"
       WYZE_API_KEY: "${WYZE_API_KEY:-}"
       WYZE_TOTP_KEY: "${WYZE_TOTP_KEY:-}"
-      # Alternatively provide tokens (access token takes precedence).
-      WYZE_ACCESS_TOKEN: "${WYZE_ACCESS_TOKEN:-}"
-      WYZE_REFRESH_TOKEN: "${WYZE_REFRESH_TOKEN:-}"
     ports:
       - host_ip: 192.168.10.13
         mode: ingress

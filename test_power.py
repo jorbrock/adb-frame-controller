@@ -309,20 +309,23 @@ class PowerTests(unittest.TestCase):
 
 class WyzeTests(unittest.TestCase):
     def setUp(self):
-        context = patch.dict(os.environ, {'WYZE_ACCESS_TOKEN': 'secret', 'WYZE_REFRESH_TOKEN': 'refresh'}, clear=True)
+        context = patch.dict(os.environ, dict(WYZE_EMAIL='email', WYZE_PASSWORD='pw', WYZE_KEY_ID='id', WYZE_API_KEY='key'), clear=True)
         context.start()
         self.addCleanup(context.stop)
         context = patch('wyze_sdk.Client')
         self.Client = context.start()
         self.addCleanup(context.stop)
         self.client = self.Client.return_value
+        self.client.login.return_value = {"access_token": "secret", "refresh_token": "refresh"}
         self.client.plugs.list.return_value = [SimpleNamespace(mac='aabbccddeeff', product=SimpleNamespace(model='WLPP1'))]
         self.power = WyzePower()
 
     def test_sdk_session_is_reused_and_mac_resolves_model(self):
         self.power.set_power('AABBCCDDEEFF', False)
         self.power.set_power('AABBCCDDEEFF', True)
-        self.Client.assert_called_once_with(token='secret', refresh_token='refresh')
+        self.assertEqual(self.Client.call_count, 2)
+        self.Client.assert_called_with(token='secret', refresh_token='refresh')
+        self.client.login.assert_called_once()
         self.client.plugs.list.assert_called_once()
         self.client.plugs.turn_off.assert_called_once_with(device_mac='aabbccddeeff', device_model='WLPP1')
         self.client.plugs.turn_on.assert_called_once_with(device_mac='aabbccddeeff', device_model='WLPP1')
@@ -342,6 +345,26 @@ class WyzeTests(unittest.TestCase):
         self.power.set_power('AABBCCDDEEFF', True)
         self.client.refresh_token.assert_called_once()
         self.assertEqual(self.client.plugs.turn_on.call_count, 2)
+
+    def test_rejected_refresh_logs_in_again_and_reuses_new_tokens(self):
+        from wyze_sdk.errors import WyzeApiError
+        self.client.login.side_effect = [
+            {"access_token": "first", "refresh_token": "first-refresh"},
+            {"access_token": "new", "refresh_token": "new-refresh"},
+        ]
+        self.client.plugs.turn_on.side_effect = [WyzeApiError('expired', {'code': 2001}), None, None]
+        self.client.refresh_token.side_effect = WyzeApiError('expired refresh', {'code': 2001})
+        self.power.set_power('AABBCCDDEEFF', True)
+        self.power.set_power('AABBCCDDEEFF', True)
+        self.assertEqual(self.client.login.call_count, 2)
+        self.Client.assert_called_with(token='new', refresh_token='new-refresh')
+        self.assertEqual(self.client.plugs.turn_on.call_count, 3)
+
+    def test_configured_tokens_do_not_bypass_login(self):
+        with patch.dict(os.environ, {'WYZE_ACCESS_TOKEN': 'stale', 'WYZE_REFRESH_TOKEN': 'stale'}):
+            self.power.set_power('AABBCCDDEEFF', True)
+        self.client.login.assert_called_once()
+        self.Client.assert_called_with(token='secret', refresh_token='refresh')
 
     def test_errors_are_sanitized_and_requests_back_off(self):
         self.client.plugs.turn_off.side_effect = RuntimeError('secret-token-password')

@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.1.0
+
+- Log in to Wyze using account and API credentials, caching the returned access
+  and refresh tokens in memory for subsequent power commands across frames.
+- Refresh expired access tokens automatically and log in again if refresh fails.
+- Remove access and refresh token environment variables from configuration.
+
+### Upgrade
+
+Build the `frame-controller:2.1.0` image and recreate the service. Configure
+`WYZE_EMAIL`, `WYZE_PASSWORD`, `WYZE_KEY_ID`, and `WYZE_API_KEY`; static access
+and refresh token environment variables are no longer used.
+
 ## v2.0.0
 - Include `wyze_power.py` in the Docker build context to fix the missing-file
   error when building the container.

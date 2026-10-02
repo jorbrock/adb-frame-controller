@@ -46,8 +46,7 @@ def configure_sdk():
         return original(client, TimedSession(session), request)
 
     def unattended_mfa(prompt):
-        raise PowerError("Interactive Wyze MFA is unavailable. Configure WYZE_TOTP_KEY "
-                         "or WYZE_ACCESS_TOKEN and WYZE_REFRESH_TOKEN.")
+        raise PowerError("Interactive Wyze MFA is unavailable. Configure WYZE_TOTP_KEY.")
 
     # The pinned SDK ignores its timeout field and otherwise calls input() for MFA.
     BaseServiceClient._do_request = bounded_request
@@ -66,19 +65,17 @@ class WyzePower:
         from wyze_sdk import Client
 
         configure_sdk()
-        token = os.environ.get("WYZE_ACCESS_TOKEN")
-        if token:
-            self.client = Client(token=token, refresh_token=os.environ.get("WYZE_REFRESH_TOKEN") or None)
-            return
         required = ("WYZE_EMAIL", "WYZE_PASSWORD", "WYZE_KEY_ID", "WYZE_API_KEY")
         if not all(os.environ.get(key) for key in required):
-            raise PowerError("Configure WYZE_EMAIL, WYZE_PASSWORD, WYZE_KEY_ID and WYZE_API_KEY, "
-                             "or WYZE_ACCESS_TOKEN, in Docker Compose.")
-        client = Client()
-        client.login(email=os.environ["WYZE_EMAIL"], password=os.environ["WYZE_PASSWORD"],
-                     key_id=os.environ["WYZE_KEY_ID"], api_key=os.environ["WYZE_API_KEY"],
-                     totp_key=os.environ.get("WYZE_TOTP_KEY") or None)
-        self.client = client
+            raise PowerError("Configure WYZE_EMAIL, WYZE_PASSWORD, WYZE_KEY_ID and WYZE_API_KEY "
+                             "in Docker Compose.")
+        response = Client().login(
+            email=os.environ["WYZE_EMAIL"], password=os.environ["WYZE_PASSWORD"],
+            key_id=os.environ["WYZE_KEY_ID"], api_key=os.environ["WYZE_API_KEY"],
+            totp_key=os.environ.get("WYZE_TOTP_KEY") or None)
+        # Cache both tokens in the shared SDK client for subsequent commands.
+        self.client = Client(token=response["access_token"], refresh_token=response["refresh_token"])
+        self.devices.clear()
 
     def _switch(self, mac, on):
         plugs = self.client.plugs
@@ -112,9 +109,17 @@ class WyzePower:
                     if (str(response.get("code")) != "2001"
                             and response.get("msg") != "AccessTokenError"):
                         raise
-                    self.client.refresh_token()
+                    try:
+                        self.client.refresh_token()
+                    except WyzeApiError:
+                        # The refresh token may also have expired or been revoked.
+                        self.client = None
+                        self._connect()
                     self._switch(mac, on)
             except Exception as exc:
+                if isinstance(exc, WyzeApiError):
+                    self.client = None
+                    self.devices.clear()
                 self.retry_at = time.monotonic() + 60
                 # SDK exceptions may contain full API responses and credentials.
                 if isinstance(exc, PowerError):
