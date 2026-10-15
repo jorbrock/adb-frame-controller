@@ -261,10 +261,10 @@ class DisplayTests(unittest.TestCase):
             frame.adb.connect.assert_not_called()
         self.POWER.set_power.assert_called_once()
 
-    def test_sleep_falls_back_to_reboot_poweroff_command(self):
-        self.frame.adb.shell.side_effect = [RuntimeError('unsupported'), '']
+    def test_sleep_uses_selected_reboot_poweroff_command(self):
+        self.frame.cfg['shutdown_command'] = 'reboot -p'
         self.sleep()
-        self.assertEqual(self.frame.adb.shell.call_args_list, [call('svc', 'power', 'shutdown'), call('reboot', '-p')])
+        self.assertEqual(self.frame.adb.shell.call_args_list, [call('reboot', '-p')])
         self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
 
     def test_sleep_cuts_power_immediately_when_adb_is_unreachable(self):
@@ -283,6 +283,7 @@ class DisplayTests(unittest.TestCase):
             self.frame.tick()
             self.POWER.set_power.assert_not_called()
             self.assertEqual(self.frame.state['manual']['shutdown_attempts'], attempt)
+        self.assertEqual(self.frame.adb.shell.call_args_list, [call('svc', 'power', 'shutdown')] * 2)
         recovered = self.recover()
         recovered.adb.shell.side_effect = RuntimeError('permission denied')
         recovered.tick()

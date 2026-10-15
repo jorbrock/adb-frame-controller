@@ -96,6 +96,16 @@ class RegistryTests(unittest.TestCase):
         with patch.object(c, "DATA", self.data), patch.dict(os.environ, {}, clear=True):
             return c.load_config()
 
+    def test_shutdown_command_defaults_validation_and_persistence(self):
+        frame = self.registry.frames["living-room"]
+        self.assertEqual(frame.cfg["shutdown_command"], "svc power shutdown")
+        for value in ("", "halt", "reboot -p; echo bad", None, [], True):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "shutdown_command"):
+                self.change("living-room", {**frame.cfg, "shutdown_command": value})
+        for command in c.SHUTDOWN_COMMANDS:
+            self.change("living-room", {**frame.cfg, "shutdown_command": command})
+            self.assertEqual(self.load()["frames"][0]["shutdown_command"], command)
+
     def test_root_defaults_validation_and_live_persistence(self):
         frame = self.registry.frames["living-room"]
         self.assertFalse(frame.cfg["run_as_root"])
@@ -362,6 +372,23 @@ class ConfigurationWebTests(unittest.TestCase):
 
     def form(self, **changes):
         return {**config()["frames"][0], "csrf": "csrf-token", "revision": self.registry.revision, "enabled": "true", **changes}
+
+    def test_shutdown_dropdown_add_edit_and_validation(self):
+        for path in ("/frames/new", "/frames/living-room/edit"):
+            page = self.client.get(path).data
+            self.assertIn(b'name="shutdown_command"', page)
+            self.assertIn(b'value="svc power shutdown" selected', page)
+            self.assertIn(b'value="reboot -p"', page)
+        response = self.client.post("/frames/new", data=self.form(
+            name="kitchen", address="host:5555", shutdown_command="reboot -p"))
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(self.registry.frames["kitchen"].cfg["shutdown_command"], "reboot -p")
+        response = self.client.post("/frames/living-room/edit", data=self.form(shutdown_command="reboot -p"))
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(b'value="reboot -p" selected', self.client.get("/frames/living-room/edit").data)
+        response = self.client.post("/frames/living-room/edit", data=self.form(shutdown_command="halt"))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.registry.frames["living-room"].cfg["shutdown_command"], "reboot -p")
 
     def test_wyze_pairing_round_trip_and_validation(self):
         response = self.client.post("/frames/living-room/edit", data=self.form(wyze_mac="aa:bb:cc:dd:ee:ff"))

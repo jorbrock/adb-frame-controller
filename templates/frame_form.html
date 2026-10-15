@@ -29,6 +29,7 @@
     <div class="settings-grid">
       <div class="field"><label for="wake">Wake time</label><input id="wake" name="wake" type="time" value="{{ frame.wake }}" required></div>
       <div class="field"><label for="sleep">Sleep time</label><input id="sleep" name="sleep" type="time" value="{{ frame.sleep }}" required></div>
+      <div class="field"><label for="shutdown_command">Shutdown command</label><select id="shutdown_command" name="shutdown_command" aria-describedby="shutdown-help">{% for command in ['svc power shutdown', 'reboot -p'] %}<option value="{{ command }}" {% if frame.get('shutdown_command', 'svc power shutdown') == command %}selected{% endif %}>{{ command }}</option>{% endfor %}</select><small id="shutdown-help">Choose the command supported by this frame. Used for sleep and hard reboot, with up to three attempts before forcing plug power off.</small></div>
       <div class="field"><label for="day_brightness">Day brightness</label><input id="day_brightness" name="day_brightness" type="number" min="1" max="255" step="1" value="{{ frame.day_brightness }}" required><small>1–255. Applied after waking or launching the app.</small></div>
       <div class="field"><label for="boot_delay_seconds">Boot delay (seconds)</label><input id="boot_delay_seconds" name="boot_delay_seconds" type="number" min="0" max="600" step="1" value="{{ frame.boot_delay_seconds }}" required><small>0–600 seconds from plug power-on before the first ADB connection attempt. Wake retries up to five times, 30 seconds apart.</small></div>
     </div>

@@ -228,7 +228,7 @@ def create_app(config, registry, data):
     def edit_frame(name=None):
         values, revision = configuration(name)
         if name is None:
-            values = dict(name="", address="", enabled=True, run_as_root=False, package="com.immichframe.immichframe",
+            values = dict(name="", address="", enabled=True, run_as_root=False, shutdown_command="svc power shutdown", package="com.immichframe.immichframe",
                           component="com.immichframe.immichframe/.MainActivity",
                           wake="07:00", sleep="22:00", day_brightness=128, boot_delay_seconds=60)
         error, code = None, 200
@@ -238,6 +238,8 @@ def create_app(config, registry, data):
             for field in ("name", "address", "package", "component", "wake", "sleep",
                           "day_brightness", "boot_delay_seconds"):
                 values[field] = request.form.get(field, "").strip()
+            values["shutdown_command"] = request.form.get(
+                "shutdown_command", values.get("shutdown_command", "svc power shutdown")).strip()
             values["wyze_mac"] = request.form.get("wyze_mac", values.get("wyze_mac", "")).strip()
             enabled = request.form.get("enabled", "true")
             values["enabled"] = enabled == "true"

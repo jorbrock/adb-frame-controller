@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a per-frame shutdown command selector for `svc power shutdown` (default)
+  or `reboot -p`; sleep and hard reboot retry only the selected command.
+
 - Trim device caches after connecting over ADB on scheduled and manual wakes,
   before launching ImmichFrame.
 

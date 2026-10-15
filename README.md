@@ -209,9 +209,10 @@ controller is stopped, or add the frames through the web UI.
 ## Behavior
 
 - Each frame has an independent worker and local wake/sleep times in the configured timezone.
-- Sleep first connects over ADB and attempts `svc power shutdown`, falling back to
-  `reboot -p` if the first command fails. Failed command pairs are tried at most
-  three times. If ADB is unavailable or all three attempts fail, the controller
+- Sleep first connects over ADB and runs the frame’s selected **Shutdown command**:
+  `svc power shutdown` (default) or `reboot -p`. Set `shutdown_command` in
+  `frames.json` or choose it in frame settings. The selected command is tried at most
+  three times; the controller does not try the other command. If ADB is unavailable or all three attempts fail, the controller
   forces power off through Wyze. When a command is accepted, it allows 30 seconds
   for shutdown before switching off the plug. Wyze failures remain visible and
   retry within the job timeout.
@@ -222,9 +223,9 @@ controller is stopped, or add the frames through the web UI.
   the job and remains visible until another action. Wake never sends an ADB reboot.
 - Once connected, wake sends `setprop service.bootanim.exit 1`, sets manual
   brightness to `day_brightness` (default 128, range 1–255), and checks the configured
-  app's main process with `pidof`. It launches the configured activity only if the
-  app is absent. ImmichFrame can be the Home app; an automatically started instance
-  is preserved. Routine wakes do not force-stop the app or trim caches.
+  app's main process with `pidof`. Before this startup sequence, wake force-stops
+  ImmichFrame and trims device caches. It then launches the configured activity,
+  including when ImmichFrame is the Home app.
 - Boot delays, retries, shutdown progress, overrides, and schedule events persist
   across controller restarts. Successful sleep leaves scheduling active so the
   next wake can turn on an off frame. A completed or failed event is not repeatedly

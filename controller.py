@@ -28,6 +28,8 @@ PLUG_ACTIONS = POWER_ACTIONS + ("wake", "sleep")
 WAKE_ATTEMPTS = 5
 RETRY_SECONDS = 30
 HEALTH_INTERVAL_SECONDS = 300
+SHUTDOWN_COMMANDS = {"svc power shutdown": ("svc", "power", "shutdown"),
+                     "reboot -p": ("reboot", "-p")}
 SHUTDOWN_ATTEMPTS = 3
 SHUTDOWN_GRACE_SECONDS = 30
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -135,6 +137,10 @@ def validate_config(config):
         frame.setdefault("run_as_root", False)
         if type(frame["run_as_root"]) is not bool:
             raise ValueError("Frame run_as_root must be a boolean")
+        frame.setdefault("shutdown_command", "svc power shutdown")
+        if (not isinstance(frame["shutdown_command"], str)
+                or frame["shutdown_command"] not in SHUTDOWN_COMMANDS):
+            raise ValueError("shutdown_command must be svc power shutdown or reboot -p")
         frame["wyze_mac"] = normalize_mac(frame.get("wyze_mac", ""))
         if frame["wyze_mac"]:
             if frame["wyze_mac"] in plugs:
@@ -359,23 +365,19 @@ class Frame:
                     # successfully even if the ADB response is lost or we restart.
                     job.update(phase="shutdown_wait", power_off_at=time.time() + SHUTDOWN_GRACE_SECONDS)
                     self.save()
-                    errors = []
-                    for command in (("svc", "power", "shutdown"), ("reboot", "-p")):
-                        try:
-                            output = self.adb.shell(*command)
-                            # svc can print a failure/usage message and exit zero.
-                            if re.search(r"failed|error|exception|denied|not found|usage:", output, re.I):
-                                raise RuntimeError(output[:400])
-                        except Exception as exc:
-                            errors.append(str(exc)[:400])
-                        else:
-                            job.update(message="Android shutdown requested; allowing 30 seconds before cutting power")
-                            break
-                    else:
-                        job.update(phase="shutting_down", message="; ".join(errors)[:600])
+                    command = SHUTDOWN_COMMANDS[self.cfg.get("shutdown_command", "svc power shutdown")]
+                    try:
+                        output = self.adb.shell(*command)
+                        # Some firmware prints an error but exits zero.
+                        if re.search(r"failed|error|exception|denied|not found|usage:", output, re.I):
+                            raise RuntimeError(output[:400])
+                    except Exception as exc:
+                        job.update(phase="shutting_down", message=str(exc)[:600])
                         if job["shutdown_attempts"] >= SHUTDOWN_ATTEMPTS:
                             job.update(phase="sleep_power_off", forced=True,
                                        message="Android shutdown failed after 3 attempts; forcing plug power off")
+                    else:
+                        job.update(message="Android shutdown requested; allowing 30 seconds before cutting power")
                     # Measure the grace period from command completion.
                     job["power_off_at"] = time.time() + SHUTDOWN_GRACE_SECONDS
                 self.save()
