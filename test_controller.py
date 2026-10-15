@@ -9,6 +9,19 @@ import controller as c
 
 
 class ADBTests(unittest.TestCase):
+    def test_disconnect_only_matching_transport(self):
+        adb = c.ADB("host:5555")
+        for state in ("device", "offline", "unauthorized"):
+            with self.subTest(state=state), patch.object(c.subprocess, "run") as run:
+                run.return_value = Mock(returncode=0, stdout=f"List of devices attached\nhost:5555\t{state}\nother:5555\tdevice\n", stderr="")
+                adb.disconnect()
+                self.assertEqual([call.args[0] for call in run.call_args_list],
+                                 [["adb", "devices"], ["adb", "disconnect", "host:5555"]])
+        with patch.object(adb, "run", return_value="List of devices attached\nhost:5556\tdevice\n") as run:
+            adb.disconnect()
+            run.assert_called_once_with("devices", targeted=False)
+
+
     def test_default_connection_does_not_request_root(self):
         adb = c.ADB("host:5555")
         with patch.object(adb, "run", side_effect=["connected", "device"]) as run:

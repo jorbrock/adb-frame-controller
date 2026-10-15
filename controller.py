@@ -203,6 +203,13 @@ class ADB:
             if self.shell("id", "-u") != "0":
                 raise RuntimeError(f"ADB root failed: {output[:600] or 'shell is not running as root'}")
 
+    def disconnect(self):
+        # Include offline/unauthorized transports, which can still reconnect later.
+        devices = self.run("devices", targeted=False)
+        if any(line.split() and line.split()[0] == self.address
+               for line in devices.splitlines()):
+            self.run("disconnect", self.address, targeted=False)
+
     def shell(self, *args, timeout=20):
         # ADB passes a remote shell string; quote each argument for that shell too.
         return self.run("shell", shlex.join(args), timeout=timeout)
@@ -1021,6 +1028,12 @@ class FrameRegistry:
                     del self.frames[name]
                     self.workers.pop(name, None)
                 else:
+                    if frame.cfg.get("enabled", True) and not cfg["enabled"]:
+                        try:
+                            frame.adb.disconnect()
+                        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                            LOG.exception("Could not disconnect ADB for disabled frame %s (%s)",
+                                          name, frame.adb.address)
                     frame.cfg = cfg
                     frame.adb = ADB(cfg["address"], cfg.get("run_as_root", False))
                     frame.path = self.data / (cfg["name"] + ".state.json")

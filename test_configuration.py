@@ -83,6 +83,9 @@ class EnvironmentTests(unittest.TestCase):
 
 class RegistryTests(unittest.TestCase):
     def setUp(self):
+        disconnect_patch = patch.object(c.ADB, "disconnect")
+        self.disconnect = disconnect_patch.start()
+        self.addCleanup(disconnect_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.data = Path(self.temp.name)
@@ -162,6 +165,34 @@ class RegistryTests(unittest.TestCase):
         self.change("living-room", {**frame.cfg, "wyze_mac": "AABBCCDDEEFF"})
         frame.request_action("wake", "b" * 32)
         self.assertEqual(frame.state["manual"]["phase"], "queued")
+
+    def test_disable_disconnects_once_after_persistence(self):
+        frame = self.registry.frames["living-room"]
+        original = dict(frame.cfg)
+        def disconnected():
+            self.assertFalse(json.loads((self.data / "frames.json").read_text())[0]["enabled"])
+        self.disconnect.side_effect = disconnected
+        self.change("living-room", {**original, "enabled": False})
+        self.disconnect.assert_called_once_with()
+        self.change("living-room", {**frame.cfg, "day_brightness": 200})
+        self.change("living-room", {**frame.cfg, "enabled": True})
+        self.disconnect.assert_called_once_with()
+
+    def test_failed_disable_save_does_not_disconnect(self):
+        frame = self.registry.frames["living-room"]
+        with patch("controller.atomic_json", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.change("living-room", {**frame.cfg, "enabled": False})
+        self.disconnect.assert_not_called()
+        self.assertTrue(frame.cfg["enabled"])
+
+    def test_disconnect_failure_keeps_management_disabled(self):
+        frame = self.registry.frames["living-room"]
+        self.disconnect.side_effect = c.subprocess.TimeoutExpired("adb", 20)
+        with self.assertLogs(c.LOG, level="ERROR"):
+            self.change("living-room", {**frame.cfg, "enabled": False})
+        self.assertFalse(frame.cfg["enabled"])
+        self.assertFalse(self.load()["frames"][0]["enabled"])
 
     def test_disabled_worker_waits_until_settings_change(self):
         frame = self.registry.frames["living-room"]
@@ -357,6 +388,9 @@ class RegistryTests(unittest.TestCase):
 
 class ConfigurationWebTests(unittest.TestCase):
     def setUp(self):
+        disconnect_patch = patch.object(c.ADB, "disconnect")
+        self.disconnect = disconnect_patch.start()
+        self.addCleanup(disconnect_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.data = Path(self.temp.name)
