@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.2.0
 
 - Add a per-frame shutdown command selector for `svc power shutdown` (default)
   or `reboot -p`; sleep and hard reboot retry only the selected command.
