@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.3.0
+
+- Move frame management from settings to a large toggle on each frame card.
+- Allow disabling management during commands, reboots, and pending power actions.
+  Disconnect ADB, clear internal state and status, and prevent interrupted workers
+  from sending follow-up commands or restoring stale status. Operators handle any
+  device recovery manually.
+- Automatically purge frame log entries older than 72 hours at startup and hourly,
+  including logs for disabled and removed frames, while preserving current status.
+
 ## v2.2.0
 
 - Add a per-frame shutdown command selector for `svc power shutdown` (default)
