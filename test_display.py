@@ -201,7 +201,6 @@ class DisplayTests(unittest.TestCase):
         self.POWER.set_power.assert_called_once_with(self.cfg['wyze_mac'], False)
         frame.adb.connect.assert_not_called()
         self.assertEqual(frame.state['power'], 'off')
-        self.assertFalse(frame.schedule_paused())
         for _ in range(3):
             self.advance(3600)
             frame = self.recover()
@@ -281,11 +280,11 @@ class DisplayTests(unittest.TestCase):
         recovered.adb.connect.assert_not_called()
         self.assertEqual(self.POWER.set_power.call_count, 2)
 
-    def test_wake_button_works_after_explicit_power_off(self):
-        self.frame.state.update(power='off', power_paused=True)
+    def test_wake_button_works_when_power_is_off(self):
+        self.frame.state.update(power='off')
         self.frame.save()
         self.wake()
-        self.assertFalse(self.frame.schedule_paused())
+        self.assertEqual(self.frame.state["power"], "on")
 
     def test_missing_plug_fails_clearly_without_device_commands(self):
         self.frame.cfg['wyze_mac'] = ''

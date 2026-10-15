@@ -40,23 +40,29 @@ class PowerTests(unittest.TestCase):
         frame.adb.shell.side_effect = lambda *args, **kwargs: 'Status: ok' if args[:2] == ('am', 'start') else '1'
         return frame
 
-    def test_off_stops_all_device_work_and_persists_across_restart(self):
-        self.frame.request_action('power_off', 'a' * 32)
-        self.frame.tick()
-        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
-        self.assertEqual(self.frame.state['power'], 'off')
-        restored = self.recover()
-        for hour in (8, 23):
-            self.datetime.now.return_value = datetime(2026, 9, 19, hour, tzinfo=ZoneInfo('UTC'))
-            restored.tick()
-        self.frame.adb.connect.assert_not_called()
-        restored.adb.connect.assert_not_called()
-        for action in ('reset_app', 'reboot', 'hard_reboot'):
-            with self.assertRaisesRegex(RuntimeError, 'Power it on'):
-                restored.request_action(action, 'b' * 32)
-        restored.request_action('power_off', 'a' * 32)  # idempotent replay
-        restored.tick()
-        self.POWER.set_power.assert_called_once()
+    def test_retired_power_actions_are_rejected(self):
+        for action in ('power_on', 'power_off'):
+            with self.subTest(action=action), self.assertRaises(ValueError):
+                self.frame.request_action(action, 'a' * 32)
+        self.POWER.set_power.assert_not_called()
+
+    def test_retired_power_journals_resume_scheduling_after_restart(self):
+        for action in ('power_on', 'power_off'):
+            for phase in ('queued', 'power_off_pending', 'rebooting', 'completed', 'failed'):
+                with self.subTest(action=action, phase=phase):
+                    self.frame.state = dict(
+                        power='off', power_paused=True,
+                        schedule_event=list(self.frame.schedule_event(self.datetime.now())),
+                        manual=dict(action=action, phase=phase, requested_at=1000))
+                    self.frame.save()
+                    restored = self.recover()
+                    self.assertNotIn('power_paused', restored.state)
+                    self.assertNotIn('manual', restored.state)
+                    self.assertNotIn('power_paused', c.read_json(restored.path, {}))
+                    self.POWER.reset_mock()
+                    restored.tick()
+                    self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', True)
+                    self.assertEqual(restored.state['manual']['action'], 'wake')
 
     def test_hard_reboot_shuts_down_then_cuts_power_for_30_seconds(self):
         frame = self.frame
@@ -142,29 +148,15 @@ class PowerTests(unittest.TestCase):
         restored.tick()
         self.assertEqual(restored.state['manual']['phase'], 'completed')
 
-    def test_on_restores_display_without_sending_adb_reboot(self):
-        self.frame.request_action('power_off', 'a' * 32)
-        self.frame.tick()
-        self.frame.request_action('power_on', 'b' * 32)
-        self.frame.tick()
-        self.frame.adb.connect.assert_not_called()
-        self.frame.tick()
-        self.frame.tick()
-        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
-        self.assertEqual(self.frame.state['power'], 'on')
-        self.frame.adb.run.assert_not_called()
-
-    def test_power_off_failure_is_unknown_and_suppresses_monitoring(self):
-        self.POWER.set_power.side_effect = PowerError('offline')
-        self.frame.request_action('power_off', 'a' * 32)
-        with self.assertLogs(c.LOG, level='WARNING'):
-            self.frame.tick()
-        self.time.return_value = 2000
-        self.frame.tick()  # timeout
-        self.frame.tick()  # still no schedule or monitoring
-        self.assertEqual(self.frame.state['power'], 'unknown')
-        self.assertEqual(self.frame.state['manual']['phase'], 'failed')
-        self.frame.adb.connect.assert_not_called()
+    def test_old_pause_flag_does_not_block_scheduled_wake(self):
+        for power in ('off', 'unknown'):
+            with self.subTest(power=power):
+                self.frame.state = dict(power=power, power_paused=True)
+                self.frame.save()
+                restored = self.recover()
+                self.POWER.reset_mock()
+                restored.tick()
+                self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', True)
 
     def test_no_power_command_if_intent_cannot_be_saved(self):
         self.frame.request_reboot('a' * 32, 'hard')
@@ -200,15 +192,15 @@ class PowerTests(unittest.TestCase):
         self.frame.request_reboot('a' * 32, 'hard')
         self.frame.request_reboot('a' * 32, 'hard')
         with self.assertRaisesRegex(RuntimeError, 'already in progress'):
-            self.frame.request_action('power_off', 'b' * 32)
+            self.frame.request_action('sleep', 'b' * 32)
         self.frame.state['manual']['phase'] = 'completed'
         with self.assertRaisesRegex(RuntimeError, 'two minutes'):
             self.frame.request_reboot('b' * 32)
 
     def test_global_wake_includes_off_frames_and_edit_cannot_interrupt_cycle(self):
         registry = c.FrameRegistry(self.cfg, self.data, [self.frame])
-        self.frame.request_action('power_off', 'a' * 32)
-        self.frame.tick()
+        self.frame.state['power'] = 'off'
+        self.frame.save()
         with self.assertRaisesRegex(RuntimeError, 'Power the frame on'):
             registry.change('living-room', {**self.frame.cfg, 'wyze_mac': ''}, registry.revision)
         self.assertEqual(registry.request_all('wake', 'b' * 32), (['living-room'], {}))
@@ -412,30 +404,28 @@ class PowerWebTests(unittest.TestCase):
         self.assertEqual(self.reboot(mode='hard').status_code, 303)
         self.frame.request_reboot.assert_called_once_with('a' * 32, 'hard')
 
-    def test_power_requires_auth_csrf_and_post(self):
-        for action in ('power_on', 'power_off'):
-            self.assertEqual(self.client.post('/frames/living-room/' + action).status_code, 302)
+    def test_retired_power_routes_are_unavailable(self):
         self.login()
         for action in ('power_on', 'power_off'):
             url = '/frames/living-room/' + action
-            self.assertEqual(self.client.get(url).status_code, 405)
-            self.assertEqual(self.client.post(url, data={'request_id': 'a' * 32}).status_code, 400)
-            self.assertEqual(self.client.post(url, data={'csrf': self.token(), 'request_id': 'bad'}).status_code, 400)
-            self.assertEqual(self.client.post(url, data={'csrf': self.token(), 'request_id': 'a' * 32}).status_code, 303)
-            self.frame.request_action.assert_called_with(action, 'a' * 32)
+            self.assertEqual(self.client.get(url).status_code, 404)
+            self.assertEqual(self.client.post(url, data={
+                'csrf': self.token(), 'request_id': 'a' * 32}).status_code, 404)
+        self.frame.request_action.assert_not_called()
 
-    def test_page_shows_power_controls_and_reboot_dropdown(self):
+    def test_page_omits_power_controls_and_keeps_reboot_dropdown(self):
         self.login()
-        self.frame.snapshot.return_value.update(wyze_mac='AABBCCDDEEFF', power='off', power_suspended=True, schedule_paused=True)
+        self.frame.snapshot.return_value.update(wyze_mac='AABBCCDDEEFF', power='off', power_suspended=True)
         response = self.client.get('/')
         self.assertIn(b'name="mode"', response.data)
         self.assertIn(b'Hard reboot', response.data)
         self.assertIn(b'aria-haspopup="menu"', response.data)
         self.assertIn(b'role="menuitem" data-mode="hard"', response.data)
         self.assertNotIn(b'<select name="mode"', response.data)
-        self.assertIn(b'Power on', response.data)
-        self.assertIn(b'Power off', response.data)
-        self.assertIn(b'Monitoring and scheduling are paused', response.data)
+        self.assertNotIn(b'Power on', response.data)
+        self.assertNotIn(b'Power off', response.data)
+        self.assertNotIn(b'Monitoring and scheduling are paused', response.data)
+        self.assertIn(b'The next scheduled wake will restore power', response.data)
 
 
 if __name__ == '__main__':

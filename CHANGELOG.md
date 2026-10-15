@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Remove dedicated Power on/off controls and their persistent scheduling pause.
+  Existing power-action journals are retired on startup so scheduling can resume.
+
 ## v2.1.0
 
 - Log in to Wyze using account and API credentials, caching the returned access

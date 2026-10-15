@@ -108,19 +108,13 @@ Both reboot modes wait for Android boot and the configured boot delay, then rest
 the scheduled display mode or active manual override. Scheduled wakes use the
 plug-based wake sequence below.
 
-**Power off** switches off the plug, clears manual wake/sleep holds, and pauses
-automatic frame monitoring and scheduled work until **Power on** or **Wake**.
 All-frame Wake/Sleep includes powered-off frames and skips disabled frames.
-This explicit Power off pause survives container restarts and schedule boundaries;
-ordinary **Sleep** still allows the next scheduled wake. **Power on** restores plug power, waits for Android, and applies the
-current schedule (or launches the slideshow when scheduling is paused), without
-sending another reboot. Frame management must be enabled to use power controls.
+Sleep allows the next scheduled wake to restore power.
 
 Power state shown in the UI is the last controller command, not a live electrical
 measurement. The controller does not poll Wyze while a frame is powered off or
 track changes made using the Wyze app, plug button, or Wyze schedules. Use these
-controller controls to keep the pause state synchronized; select **Power on** here
-or **Wake** after restoring power elsewhere. A failed/ambiguous off request is shown as
+controller controls; select **Wake** after restoring power elsewhere. A failed/ambiguous off request is shown as
 unknown power and also pauses device commands until power is restored.
 
 Hard reboot's power restoration is journaled before switching off. If the

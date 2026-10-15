@@ -170,8 +170,6 @@ def create_app(config, registry, data):
     @app.post("/frames/<name>/wake", defaults={"action": "wake"})
     @app.post("/frames/<name>/sleep", defaults={"action": "sleep"})
     @app.post("/frames/<name>/reset_app", defaults={"action": "reset_app"})
-    @app.post("/frames/<name>/power_on", defaults={"action": "power_on"})
-    @app.post("/frames/<name>/power_off", defaults={"action": "power_off"})
     def display_action(name, action):
         token = request.form.get("request_id", "")
         if not re.fullmatch(r"[0-9a-f]{32}", token):

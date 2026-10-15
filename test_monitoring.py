@@ -74,8 +74,8 @@ class MonitoringTests(unittest.TestCase):
         recovered.tick()
         recovered.adb.connect.assert_called_once()
 
-    def test_skips_disabled_asleep_off_unknown_paused_and_manual_sleep(self):
-        for change in ('disabled', 'night', 'off', 'unknown', 'paused', 'sleep'):
+    def test_skips_disabled_asleep_off_unknown_and_manual_sleep(self):
+        for change in ('disabled', 'night', 'off', 'unknown', 'sleep'):
             with self.subTest(change=change):
                 frame = self.recover()
                 self.datetime.now.return_value = datetime(2026, 9, 18, 12, tzinfo=ZoneInfo('UTC'))
@@ -86,8 +86,6 @@ class MonitoringTests(unittest.TestCase):
                     frame.state['schedule_event'] = list(frame.schedule_event(self.datetime.now()))
                 elif change in ('off', 'unknown'):
                     frame.state['power'] = change
-                elif change == 'paused':
-                    frame.state['power_paused'] = True
                 else:
                     frame.state['override'] = dict(mode='night', expires_at=9999999999)
                 frame.tick()

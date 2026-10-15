@@ -20,10 +20,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOG = logging.getLogger("frames")
 STOP = threading.Event()
-POWER_PHASES = ("power_off_pending", "power_wait", "power_on_pending")
+POWER_PHASES = ("power_wait", "power_on_pending")
 SHUTDOWN_PHASES = ("shutting_down", "shutdown_wait", "sleep_power_off")
 ACTIVE_PHASES = ("queued", "rebooting", "starting", "boot_wait") + POWER_PHASES + SHUTDOWN_PHASES
-POWER_ACTIONS = ("hard_reboot", "power_on", "power_off")
+POWER_ACTIONS = ("hard_reboot",)
 PLUG_ACTIONS = POWER_ACTIONS + ("wake", "sleep")
 WAKE_ATTEMPTS = 5
 RETRY_SECONDS = 30
@@ -218,6 +218,14 @@ class Frame:
         self.status_path = data / (config["name"] + ".status.json")
         self.log_path = data / (config["name"] + ".log.jsonl")
         self.state = read_json(self.path, {})
+        # Retire explicit power controls and their indefinite scheduling pause.
+        retired_job = self.state.get("manual", {}).get("action") in ("power_on", "power_off")
+        if "power_paused" in self.state or retired_job:
+            self.state.pop("power_paused", None)
+            if retired_job:
+                self.state.pop("manual", None)
+                self.state.pop("schedule_event", None)
+            self.save()
         job = self.state.get("manual", {})
         if job.get("action") == "hard_reboot" and job.get("phase") == "power_wait":
             # A crash may have interrupted the off request. Allow a fresh 30s
@@ -261,11 +269,6 @@ class Frame:
     def power_suspended(self, state=None):
         return (self.state if state is None else state).get("power") in ("off", "unknown")
 
-    def schedule_paused(self, state=None):
-        state = self.state if state is None else state
-        # Older explicit Power off journals did not have a separate pause flag.
-        return state.get("power_paused", self.power_suspended(state))
-
     def schedule_event(self, now):
         # Compare actual instants so a repeated DST hour cannot undo an event
         # that already happened in the first fold.
@@ -282,7 +285,7 @@ class Frame:
             self.save()
         if self.manual_tick():
             return
-        if self.schedule_paused() or self.active_override(datetime.now(self.zone)):
+        if self.active_override(datetime.now(self.zone)):
             self.health_tick()
             return  # Preserve overrides while monitoring awake frames.
         if not self.scheduled:
@@ -337,7 +340,6 @@ class Frame:
         if job["phase"] not in SHUTDOWN_PHASES:
             job.update(phase="shutting_down", shutdown_attempts=0, shutdown_started_at=time.time(),
                        forced=False)
-            self.state["power_paused"] = False
             self.save()
         if job["phase"] == "shutting_down":
             if job["shutdown_attempts"] >= SHUTDOWN_ATTEMPTS:
@@ -390,7 +392,7 @@ class Frame:
     def sleep_tick(self, job):
         """Shut Android down, then leave plug power off until the next wake."""
         if self.shutdown_tick(job):
-            self.state.update(power="unknown", power_paused=False)
+            self.state["power"] = "unknown"
             self.save()
             POWER.set_power(self.cfg["wyze_mac"], False)
             self.state["power"] = "off"
@@ -405,7 +407,7 @@ class Frame:
             self.save()
         if job["phase"] == "power_on_pending":
             POWER.set_power(self.cfg["wyze_mac"], True)
-            self.state.update(power="on", power_paused=False)
+            self.state["power"] = "on"
             job.update(phase="boot_wait", powered_on_at=time.time(), connect_attempts=0,
                        next_attempt_at=time.time() + self.cfg["boot_delay_seconds"],
                        message="Plug powered on; waiting for boot delay")
@@ -443,7 +445,7 @@ class Frame:
             (LOG.error if attempts >= 3 else LOG.warning)("%s: %s", self.cfg["name"], job["message"])
 
     def monitoring_awake(self):
-        if self.schedule_paused() or self.power_suspended():
+        if self.power_suspended():
             return False
         override = self.active_override(datetime.now(self.zone))
         if override:
@@ -669,7 +671,7 @@ class Frame:
                 raise RuntimeError("A manual action is already in progress for this frame.")
             if action in PLUG_ACTIONS and not self.cfg.get("wyze_mac"):
                 raise RuntimeError("Pair a Wyze plug in frame settings first.")
-            if self.power_suspended() and action not in ("power_on", "power_off", "wake", "sleep"):
+            if self.power_suspended() and action not in ("wake", "sleep"):
                 raise RuntimeError("Frame power is off or unknown. Power it on first.")
             now = time.time()
             last_reboot = self.state.get("last_reboot_requested_at",
@@ -683,7 +685,7 @@ class Frame:
             self.state["last_reboot_requested_at"] = last_reboot
             if action in ("reboot", "hard_reboot"):
                 self.state["last_reboot_requested_at"] = now
-            elif action not in POWER_ACTIONS:
+            else:
                 self.state["override"] = dict(
                     mode="day" if action in ("wake", "reset_app") else "night",
                     expires_at=next_boundary(datetime.now(self.zone),
@@ -787,8 +789,7 @@ class Frame:
                 self.sleep_tick(job)
                 return True
             self.launch()
-            self.finish_job(job, "Power on completed and ImmichFrame launched" if action == "power_on"
-                            else "Reboot completed and ImmichFrame launched")
+            self.finish_job(job, "Reboot completed and ImmichFrame launched")
         except Exception as exc:
             job["message"] = str(exc)[:600]
             self.save()
@@ -817,22 +818,6 @@ class Frame:
                 self.save()
             self.status("hard_reboot_power_off")
             return True
-        if job["phase"] == "queued":
-            job["phase"] = "power_on_pending" if action == "power_on" else "power_off_pending"
-            self.save()
-        if job["phase"] == "power_off_pending":
-            # A lost response can mean the plug switched off. Suspend all device
-            # work before sending, and safely repeat this idempotent command.
-            self.state.update(power="unknown", power_paused=True)
-            self.save()
-            POWER.set_power(self.cfg["wyze_mac"], False)
-            self.state["power"] = "off"
-            self.state.pop("override", None)
-            job.update(phase="completed", completed_at=time.time(),
-                       message="Plug powered off; monitoring and scheduling paused until power on.")
-            self.save()
-            self.status("powered_off")
-            return True
         if job["phase"] == "power_wait":
             if time.time() < job["power_on_at"]:
                 return True
@@ -843,7 +828,6 @@ class Frame:
             self.state["power"] = "on"
             job.update(phase="rebooting", powered_on_at=time.time(),
                        message="Plug powered on; waiting for Android to boot")
-            self.state["power_paused"] = False
             if job.get("source") == "monitoring":
                 job.update(next_attempt_at=time.time() + self.cfg["boot_delay_seconds"], attempts=0)
             # Boot recovery gets a fresh timeout after a potentially long outage.
@@ -868,8 +852,7 @@ class Frame:
                 "status": status, "job": job, "override": display_override,
                 "busy": job.get("phase") in ACTIVE_PHASES,
                 "power": state.get("power", "untracked"),
-                "power_suspended": self.power_suspended(state),
-                "schedule_paused": self.schedule_paused(state)}
+                "power_suspended": self.power_suspended(state)}
 
     def work(self):
         while not STOP.is_set() and not self.stopped.is_set():

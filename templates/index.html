@@ -35,7 +35,7 @@
     <dl class="times"><div><dt>Wake</dt><dd>{{ frame.wake }}</dd></div><div><dt>Sleep</dt><dd>{{ frame.sleep }}</dd></div><div><dt>Boot delay</dt><dd>{{ frame.boot_delay_seconds }}s</dd></div></dl>
     <div class="frame-status">
       {% if not frame.get('enabled', true) %}<p class="muted">Management is disabled. No commands or status checks are running.</p>{% endif %}
-      {% if frame.power_suspended %}<p class="muted">{% if frame.schedule_paused %}Monitoring and scheduling are paused until Power on or Wake.{% elif scheduled %}Frame power is off or unknown. The next scheduled wake will restore power.{% else %}Frame power is off or unknown. Use Wake to restore power.{% endif %}</p>{% endif %}
+      {% if frame.power_suspended %}<p class="muted">{% if scheduled %}Frame power is off or unknown. The next scheduled wake will restore power.{% else %}Frame power is off or unknown. Use Wake to restore power.{% endif %}</p>{% endif %}
       {% if not frame.wyze_mac %}<p class="muted">Pair a Wyze plug in settings to enable wake and sleep.</p>{% endif %}
       {% if frame.wyze_mac %}<p class="muted">Wyze plug: {{ frame.wyze_mac }} · {{ 'Power not yet controlled' if frame.power == 'untracked' else 'Last commanded power: ' ~ frame.power }}</p>{% endif %}
       <p class="eyebrow">LAST CONTROLLER RESULT</p>
@@ -80,17 +80,6 @@
       </div>
     </form>
     </div>
-    {% if frame.wyze_mac %}
-    <div class="display-actions" role="group" aria-label="Plug power for {{ frame.name }}">
-      {% for action, label in [('power_on', 'Power on'), ('power_off', 'Power off')] %}
-      <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action=action) }}">
-        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-        <input type="hidden" name="request_id" value="{{ request_token() }}">
-        <button class="quiet" type="submit" {% if frame.busy or not frame.get('enabled', true) %}disabled{% endif %}>{{ label }}</button>
-      </form>
-      {% endfor %}
-    </div>
-    {% endif %}
     <nav class="frame-actions" aria-label="Manage {{ frame.name }}">
       <a class="button quiet" href="{{ url_for('edit_frame', name=frame.name) }}">Edit settings</a>
       <a class="button quiet danger-text" href="{{ url_for('remove_frame', name=frame.name) }}">Remove</a>

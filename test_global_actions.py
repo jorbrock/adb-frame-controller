@@ -69,7 +69,7 @@ class GlobalActionTests(unittest.TestCase):
         for action in ("wake", "sleep"):
             with self.subTest(action=action), patch.object(c, "POWER") as power:
                 for frame in self.registry.frames.values():
-                    frame.state = {"power": "off", "power_paused": True}
+                    frame.state = {"power": "off"}
                     frame.adb = Mock()
                     frame.adb.connect.side_effect = RuntimeError("powered off") if action == "sleep" else None
                     frame.adb.shell.side_effect = lambda *args: "" if args[:2] == ("sh", "-c") else "Status: ok"
