@@ -137,7 +137,7 @@ class RegistryTests(unittest.TestCase):
         self.change("living-room", {**frame.cfg, "enabled": False})
         restored = c.FrameRegistry(self.load(), self.data).frames["living-room"]
         self.assertFalse(restored.cfg["enabled"])
-        self.assertEqual(restored.state["completed_window"], "2026-09-18")
+        self.assertEqual(restored.state, {})
         restored.adb = Mock()
         restored.status = Mock()
         restored.scheduled = True
@@ -150,15 +150,16 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "management is disabled"):
                 restored.request_action(action, "a" * 32)
 
-    def test_disable_cancels_pending_work_and_reenable_preserves_history(self):
+    def test_disable_clears_pending_work_and_reenable_starts_fresh(self):
         frame = self.registry.frames["living-room"]
         frame.request_action("reset_app", "a" * 32)
         frame.state["completed_window"] = "2026-09-18"
         self.change("living-room", {**frame.cfg, "enabled": False})
-        self.assertEqual(frame.state["manual"]["phase"], "cancelled")
+        frame = self.registry.frames["living-room"]
+        self.assertEqual(frame.state, {})
         self.assertNotIn("override", frame.state)
         self.change("living-room", {**frame.cfg, "enabled": True})
-        self.assertEqual(frame.state["completed_window"], "2026-09-18")
+        self.assertEqual(frame.state, {})
         frame.adb = Mock()
         frame.tick()  # Global scheduling is off; old manual work must not resume.
         self.assertEqual(frame.adb.mock_calls, [])
@@ -174,9 +175,92 @@ class RegistryTests(unittest.TestCase):
         self.disconnect.side_effect = disconnected
         self.change("living-room", {**original, "enabled": False})
         self.disconnect.assert_called_once_with()
+        frame = self.registry.frames["living-room"]
         self.change("living-room", {**frame.cfg, "day_brightness": 200})
         self.change("living-room", {**frame.cfg, "enabled": True})
         self.disconnect.assert_called_once_with()
+
+    def test_disable_clears_every_pending_phase_even_with_operation_lock_held(self):
+        for phase in c.ACTIVE_PHASES:
+            with self.subTest(phase=phase):
+                frame = self.registry.frames["living-room"]
+                self.change("living-room", {**frame.cfg, "enabled": True})
+                frame.state = dict(manual=dict(action="hard_reboot", phase=phase),
+                                   power="off", override={"mode": "night"},
+                                   next_health_check_at=123, last_reboot_requested_at=123)
+                frame.save()
+                frame.status("waiting", error="old error")
+                with frame.mutex:
+                    self.change("living-room", {**frame.cfg, "enabled": False})
+                current = self.registry.frames["living-room"]
+                self.assertIsNot(frame, current)
+                self.assertEqual(current.state, {})
+                self.assertEqual(current.snapshot()["status"], {})
+                self.assertFalse(current.snapshot()["busy"])
+                self.assertEqual(json.loads(current.path.read_text()), {})
+                with self.assertRaises(c.OperationCancelled):
+                    frame.status("stale")
+                with self.assertRaises(c.OperationCancelled):
+                    frame.save()
+
+    def test_disable_during_adb_command_prevents_followup_after_reenable(self):
+        frame = self.registry.frames["living-room"]
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+        def command(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test command timed out")
+            return Mock(returncode=0, stdout="device", stderr="")
+        def operation():
+            with frame.mutex:
+                try:
+                    frame.adb.connect()
+                    frame.status("unexpected completion")
+                except c.OperationCancelled:
+                    errors.append("cancelled")
+        with patch.object(c.subprocess, "run", side_effect=command) as run:
+            worker = threading.Thread(target=operation)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.change("living-room", {**frame.cfg, "enabled": False})
+                self.disconnect.assert_called_once_with()
+                current = self.registry.frames["living-room"]
+                self.change("living-room", {**current.cfg, "enabled": True})
+            finally:
+                release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, ["cancelled"])
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(current.snapshot()["status"], {})
+
+    def test_disable_during_plug_command_cannot_restore_state(self):
+        frame = self.registry.frames["living-room"]
+        frame.cfg["wyze_mac"] = "AABBCCDDEEFF"
+        frame.request_action("wake", "a" * 32)
+        entered, release = threading.Event(), threading.Event()
+        def power(*args):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test plug timed out")
+        with patch.object(c.POWER, "set_power", side_effect=power) as power_call:
+            worker = threading.Thread(target=frame.work)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.change("living-room", {**frame.cfg, "enabled": False})
+                current = self.registry.frames["living-room"]
+                self.assertEqual(current.state, {})
+                self.assertEqual(current.snapshot()["status"], {})
+            finally:
+                release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(power_call.call_count, 1)
+            self.assertEqual(json.loads(current.path.read_text()), {})
+            self.assertEqual(current.snapshot()["status"], {})
 
     def test_failed_disable_save_does_not_disconnect(self):
         frame = self.registry.frames["living-room"]
@@ -197,6 +281,7 @@ class RegistryTests(unittest.TestCase):
     def test_disabled_worker_waits_until_settings_change(self):
         frame = self.registry.frames["living-room"]
         self.change("living-room", {**frame.cfg, "enabled": False})
+        frame = self.registry.frames["living-room"]
         frame.adb = Mock()
         frame.wakeup = Mock()
         frame.wakeup.wait.side_effect = lambda timeout: frame.stopped.set()
@@ -492,6 +577,7 @@ class ConfigurationWebTests(unittest.TestCase):
             self.assertIn(b"management is disabled", response.data)
         self.assertEqual(self.client.post("/frames/living-room/management",
             data=self.form(enabled="true")).status_code, 303)
+        frame = self.registry.frames["living-room"]
         self.assertTrue(frame.cfg["enabled"])
         self.assertIn(b'role="switch" aria-checked="true"', self.client.get("/").data)
         self.assertEqual(self.client.post("/frames/living-room/management",

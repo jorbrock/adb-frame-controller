@@ -209,11 +209,11 @@ class PowerTests(unittest.TestCase):
         self.assertEqual(self.frame.state['manual']['phase'], 'completed')
         self.frame.request_reboot('c' * 32, 'hard')
         self.frame.tick()
-        for cfg in (None, {**self.frame.cfg, 'enabled': False}, self.frame.cfg):
+        for cfg in (None, self.frame.cfg):
             with self.assertRaisesRegex(RuntimeError, 'power action'):
                 registry.change('living-room', cfg, registry.revision)
 
-    def test_soft_reboot_shutdown_cannot_be_interrupted_by_disabling_management(self):
+    def test_soft_reboot_shutdown_can_be_interrupted_by_disabling_management(self):
         self.datetime.now.return_value = datetime(2026, 9, 18, 23, tzinfo=ZoneInfo('UTC'))
         registry = c.FrameRegistry(self.cfg, self.data, [self.frame])
         self.frame.request_reboot('a' * 32)
@@ -223,12 +223,16 @@ class PowerTests(unittest.TestCase):
         self.frame.adb.boot_id.return_value = 'new-boot'
         self.frame.tick()
         self.assertEqual(self.frame.state['manual']['phase'], 'shutdown_wait')
-        with self.assertRaisesRegex(RuntimeError, 'power action'):
+        with patch.object(c.ADB, 'disconnect') as disconnect:
             registry.change('living-room', {**self.frame.cfg, 'enabled': False}, registry.revision)
+            disconnect.assert_called_once_with()
         self.time.return_value = 1920
         self.frame.tick()
-        self.POWER.set_power.assert_called_once_with('AABBCCDDEEFF', False)
-        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+        current = registry.frames['living-room']
+        current.tick()
+        self.POWER.set_power.assert_not_called()
+        self.assertEqual(current.state, {})
+        self.assertEqual(current.snapshot()['status'], {})
 
     def test_hard_reboot_falls_back_when_adb_is_unresponsive(self):
         self.frame.adb.connect.side_effect = RuntimeError('offline')

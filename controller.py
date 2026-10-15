@@ -177,14 +177,21 @@ def validate_config(config):
     return config
 
 
+class OperationCancelled(Exception):
+    """An obsolete frame worker must stop without publishing results."""
+
+
 class ADB:
     def __init__(self, address, run_as_root=False):
         self.address = address
         self.run_as_root = run_as_root
+        self.check_active = lambda: None
 
     def run(self, *args, timeout=20, targeted=True):
+        self.check_active()
         command = ["adb"] + (["-s", self.address] if targeted else []) + list(args)
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        self.check_active()
         output = (result.stdout + result.stderr).strip()
         if result.returncode:
             raise RuntimeError(f"ADB {args[0]} failed: {output[:600]}")
@@ -223,9 +230,12 @@ class ADB:
 
 class Frame:
     def __init__(self, config, timezone, scheduled=True, data=None):
+        self.stopped = threading.Event()
+        self.persistence_lock = threading.RLock()
         self.cfg = config
         self.zone = ZoneInfo(timezone)
         self.adb = ADB(config["address"], config.get("run_as_root", False))
+        self.adb.check_active = self.check_active
         data = DATA if data is None else data
         self.path = data / (config["name"] + ".state.json")
         self.status_path = data / (config["name"] + ".status.json")
@@ -247,31 +257,43 @@ class Frame:
         self.scheduled = scheduled
         self.mutex = threading.Lock()
         self.wakeup = threading.Event()
-        self.stopped = threading.Event()
+
+    def check_active(self):
+        if self.stopped.is_set():
+            raise OperationCancelled()
+
+    def set_power(self, enabled):
+        self.check_active()
+        POWER.set_power(self.cfg["wyze_mac"], enabled)
+        self.check_active()
 
     def save(self):
-        atomic_json(self.path, self.state)
+        with self.persistence_lock:
+            self.check_active()
+            atomic_json(self.path, self.state)
 
     def status(self, result, **extra):
-        entry = {
-            "frame": self.cfg["name"], "address": self.cfg["address"],
-            "updated_at": datetime.now(self.zone).isoformat(),
-            "result": result, **extra,
-        }
-        previous = read_json(self.status_path, {})
-        atomic_json(self.status_path, entry)
-        try:
-            # These states are checked every cycle without sending device commands.
-            # Refresh the status timestamp, but only log changes to these states.
-            unchanged_state = result in ("manual_wake_active", "schedule_disabled") and (
-                {key: value for key, value in entry.items() if key != "updated_at"}
-                == {key: value for key, value in previous.items() if key != "updated_at"}
-            )
-            if unchanged_state and self.log_path.exists() and self.log_path.stat().st_size:
-                return
-            frame_log.append(self.log_path, entry, previous)
-        except OSError:
-            LOG.exception("Cannot append controller log for %s", self.cfg["name"])
+        with self.persistence_lock:
+            self.check_active()
+            entry = {
+                "frame": self.cfg["name"], "address": self.cfg["address"],
+                "updated_at": datetime.now(self.zone).isoformat(),
+                "result": result, **extra,
+            }
+            previous = read_json(self.status_path, {})
+            atomic_json(self.status_path, entry)
+            try:
+                # These states are checked every cycle without sending device commands.
+                # Refresh the status timestamp, but only log changes to these states.
+                unchanged_state = result in ("manual_wake_active", "schedule_disabled") and (
+                    {key: value for key, value in entry.items() if key != "updated_at"}
+                    == {key: value for key, value in previous.items() if key != "updated_at"}
+                )
+                if unchanged_state and self.log_path.exists() and self.log_path.stat().st_size:
+                    return
+                frame_log.append(self.log_path, entry, previous)
+            except OSError:
+                LOG.exception("Cannot append controller log for %s", self.cfg["name"])
 
     def active_override(self, now, state=None):
         override = (self.state if state is None else state).get("override", {})
@@ -364,6 +386,8 @@ class Frame:
                 self.save()  # A restart cannot reset the shutdown attempt budget.
                 try:
                     self.adb.connect()
+                except OperationCancelled:
+                    raise
                 except Exception as exc:
                     job.update(phase="sleep_power_off", forced=True,
                                message=f"ADB unavailable; forcing plug power off: {str(exc)[:400]}")
@@ -378,6 +402,8 @@ class Frame:
                         # Some firmware prints an error but exits zero.
                         if re.search(r"failed|error|exception|denied|not found|usage:", output, re.I):
                             raise RuntimeError(output[:400])
+                    except OperationCancelled:
+                        raise
                     except Exception as exc:
                         job.update(phase="shutting_down", message=str(exc)[:600])
                         if job["shutdown_attempts"] >= SHUTDOWN_ATTEMPTS:
@@ -403,7 +429,7 @@ class Frame:
         if self.shutdown_tick(job):
             self.state["power"] = "unknown"
             self.save()
-            POWER.set_power(self.cfg["wyze_mac"], False)
+            self.set_power(False)
             self.state["power"] = "off"
             self.finish_job(job, "Plug powered off" + (
                 "; forced shutdown because Android shutdown was unavailable" if job.get("forced")
@@ -415,7 +441,7 @@ class Frame:
             job["phase"] = "power_on_pending"
             self.save()
         if job["phase"] == "power_on_pending":
-            POWER.set_power(self.cfg["wyze_mac"], True)
+            self.set_power(True)
             self.state["power"] = "on"
             job.update(phase="boot_wait", powered_on_at=time.time(), connect_attempts=0,
                        next_attempt_at=time.time() + self.cfg["boot_delay_seconds"],
@@ -447,6 +473,8 @@ class Frame:
             if not self.wake_startup(job, foreground=True):
                 return
             self.finish_job(job, "Wake completed; brightness restored and ImmichFrame running")
+        except OperationCancelled:
+            raise
         except Exception as exc:
             attempts = job["connect_attempts"]
             job.update(phase="failed" if attempts == WAKE_ATTEMPTS else "boot_wait",
@@ -495,6 +523,8 @@ class Frame:
         try:
             self.adb.connect()
             return self.adb.shell("echo", "frame-health") == "frame-health"
+        except OperationCancelled:
+            raise
         except Exception:
             return False
 
@@ -511,6 +541,8 @@ class Frame:
         try:
             self.adb.connect()
             fault = self.app_health()
+        except OperationCancelled:
+            raise
         except Exception as exc:
             if self.adb_responsive():
                 self.status("monitoring_error", error=str(exc)[:600])
@@ -601,6 +633,8 @@ class Frame:
             if fault:
                 raise RuntimeError(fault)
             self.finish_job(job, "ImmichFrame recovery verified: process healthy and app in foreground")
+        except OperationCancelled:
+            raise
         except Exception as exc:
             message = str(exc)[:600]
             if action == "reset_app":
@@ -674,7 +708,7 @@ class Frame:
             raise RuntimeError("Frame is busy. Try again shortly.")
         try:
             if not self.cfg.get("enabled", True):
-                raise RuntimeError("Frame management is disabled. Enable it in settings first.")
+                raise RuntimeError("Frame management is disabled. Enable it on the frame card first.")
             old = self.state.get("manual", {})
             if old.get("id") == request_id:
                 if old.get("action", "reboot") != action:
@@ -803,6 +837,8 @@ class Frame:
                 return True
             self.launch()
             self.finish_job(job, "Reboot completed and ImmichFrame launched")
+        except OperationCancelled:
+            raise
         except Exception as exc:
             job["message"] = str(exc)[:600]
             self.save()
@@ -821,7 +857,7 @@ class Frame:
                        message="Switching plug off; power will be restored after 30 seconds")
             self.save()  # Never repeat the off command after an ambiguous response or crash.
             try:
-                POWER.set_power(self.cfg["wyze_mac"], False)
+                self.set_power(False)
                 self.state["power"] = "off"
                 job["off_confirmed"] = True
                 job["message"] = "Plug powered off; waiting 30 seconds before restoring power"
@@ -837,7 +873,7 @@ class Frame:
             job.update(phase="power_on_pending", message="Restoring plug power")
             self.save()
         if job["phase"] == "power_on_pending":
-            POWER.set_power(self.cfg["wyze_mac"], True)
+            self.set_power(True)
             self.state["power"] = "on"
             job.update(phase="rebooting", powered_on_at=time.time(),
                        message="Plug powered on; waiting for Android to boot")
@@ -875,10 +911,14 @@ class Frame:
                     return
                 try:
                     self.tick()
+                except OperationCancelled:
+                    return
                 except Exception as exc:
                     LOG.warning("%s: %s", self.cfg["name"], exc)
                     try:
                         self.status("error", error=str(exc))
+                    except OperationCancelled:
+                        return
                     except OSError:
                         LOG.exception("Cannot write frame status")
             self.wakeup.wait(None if not self.cfg.get("enabled", True) else
@@ -992,6 +1032,30 @@ class FrameRegistry:
                 candidates.append(values)
             validated = validate_config({**self.config, "frames": candidates})["frames"]
             cfg = next((cfg for cfg in validated if values is not None and cfg["name"] == values["name"]), None)
+            # A management-only disable never waits for the device-operation mutex.
+            if (frame is not None and cfg is not None and not cfg["enabled"]
+                    and cfg == {**frame.cfg, "enabled": False}):
+                with frame.persistence_lock:
+                    atomic_json(self.data / "frames.json", validated)
+                    frame.stopped.set()
+                    frame.wakeup.set()
+                    frame.cfg = cfg
+                    atomic_json(frame.path, {})
+                    atomic_json(frame.status_path, {})
+                    replacement = Frame(cfg, self.config["timezone"],
+                                        self.config.get("enabled", False), self.data)
+                    self.frames[name] = replacement
+                    self.config["frames"] = validated
+                    self.revision = secrets.token_hex(16)
+                    if self.running:
+                        self.workers[name] = self._start(replacement)
+                try:
+                    # Use a separate client: the old worker's client is cancelled.
+                    ADB(cfg["address"]).disconnect()
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    LOG.exception("Could not disconnect ADB for disabled frame %s (%s)",
+                                  name, frame.adb.address)
+                return
             if frame is not None and not frame.mutex.acquire(blocking=False):
                 raise RuntimeError("Frame is busy. Try again shortly.")
             added = None
@@ -1036,6 +1100,7 @@ class FrameRegistry:
                                           name, frame.adb.address)
                     frame.cfg = cfg
                     frame.adb = ADB(cfg["address"], cfg.get("run_as_root", False))
+                    frame.adb.check_active = frame.check_active
                     frame.path = self.data / (cfg["name"] + ".state.json")
                     frame.status_path = self.data / (cfg["name"] + ".status.json")
                     frame.log_path = self.data / (cfg["name"] + ".log.jsonl")
