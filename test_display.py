@@ -95,21 +95,74 @@ class DisplayTests(unittest.TestCase):
             frame.adb.connect.assert_not_called()
         self.advance(1)
         frame.tick()
-        self.assertEqual(frame.adb.shell.call_args_list, [
-            call('setprop', 'service.bootanim.exit', '1'),
-            call('settings', 'put', 'system', 'screen_brightness_mode', '0'),
-            call('settings', 'put', 'system', 'screen_brightness', '200'),
-            call('sh', '-c', 'pidof com.example.frame || [ "$?" = 1 ]'),
-            call('am', 'start', '-W', '-n', self.cfg['component'])])
+        self.assertEqual(frame.adb.mock_calls, [
+            call.connect(),
+            call.shell('am', 'force-stop', self.cfg['package']),
+            call.shell('pm', 'trim-caches', '999G', timeout=120),
+            call.shell('setprop', 'service.bootanim.exit', '1'),
+            call.shell('settings', 'put', 'system', 'screen_brightness_mode', '0'),
+            call.shell('settings', 'put', 'system', 'screen_brightness', '200'),
+            call.shell('sh', '-c', 'pidof com.example.frame || [ "$?" = 1 ]'),
+            call.shell('am', 'start', '-W', '-n', self.cfg['component'])])
         frame.adb.run.assert_not_called()
         self.assertEqual(frame.state['manual']['phase'], 'completed')
 
-    def test_home_app_is_not_stopped_or_relaunched(self):
-        self.frame.adb.shell.side_effect = lambda *args: '1234' if args[:2] == ('sh', '-c') else ''
-        self.wake()
-        self.assertFalse(any(args.args[:2] in (('am', 'start'), ('am', 'force-stop'))
+    def test_scheduled_wake_trims_and_relaunches_running_home_app(self):
+        def shell(*args, **kwargs):
+            return '1234' if args[:2] == ('sh', '-c') else self.shell(*args, **kwargs)
+        self.frame.adb.shell.side_effect = shell
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['source'], 'scheduled')
+        self.advance(60)
+        self.frame.tick()
+        calls = self.frame.adb.mock_calls
+        connect = call.connect()
+        stop = call.shell('am', 'force-stop', self.cfg['package'])
+        trim = call.shell('pm', 'trim-caches', '999G', timeout=120)
+        launch = call.shell('am', 'start', '-W', '-n', self.cfg['component'])
+        self.assertLess(calls.index(connect), calls.index(stop))
+        self.assertLess(calls.index(stop), calls.index(trim))
+        self.assertLess(calls.index(trim), calls.index(launch))
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+
+    def test_wake_trim_failure_retries_before_launch(self):
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        with patch.object(self.frame, 'trim_device_caches', side_effect=RuntimeError('trim failed')):
+            with self.assertLogs(c.LOG, level='WARNING'):
+                self.frame.tick()
+        self.assertNotIn('cache_trimmed', self.frame.state['manual'])
+        self.frame.adb.shell.assert_not_called()
+        self.advance(30)
+        self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'completed')
+        self.frame.adb.shell.assert_any_call('pm', 'trim-caches', '999G', timeout=120)
+
+    def test_wake_does_not_repeat_successful_trim_after_restart(self):
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        with patch.object(self.frame, 'start_app', side_effect=RuntimeError('launch failed')):
+            with self.assertLogs(c.LOG, level='WARNING'):
+                self.frame.tick()
+        restored = self.recover()
+        self.advance(30)
+        restored.tick()
+        self.assertEqual(restored.state['manual']['phase'], 'completed')
+        self.assertNotIn(call('pm', 'trim-caches', '999G', timeout=120),
+                         restored.adb.shell.call_args_list)
+
+    def test_wake_trim_crossing_sleep_boundary_does_not_launch(self):
+        self.now = self.now.replace(hour=21, minute=58, second=30)
+        self.frame.request_action('wake', 'a' * 32)
+        self.frame.tick()
+        self.advance(60)
+        with patch.object(self.frame, 'trim_device_caches', side_effect=lambda: self.advance(30)):
+            self.frame.tick()
+        self.assertEqual(self.frame.state['manual']['phase'], 'cancelled')
+        self.assertFalse(any(args.args[:2] == ('am', 'start')
                              for args in self.frame.adb.shell.call_args_list))
-        self.frame.adb.shell.assert_any_call('settings', 'put', 'system', 'screen_brightness', '200')
 
     def test_five_attempts_30_seconds_apart_and_error_after_third(self):
         frame = self.frame
@@ -178,7 +231,7 @@ class DisplayTests(unittest.TestCase):
                 self.frame.request_action('wake', 'a' * 32)
                 self.frame.tick()
                 self.advance(60)
-                def shell(*args):
+                def shell(*args, **kwargs):
                     if args[0] == failure:
                         raise RuntimeError('command failed')
                     return self.shell(*args)

@@ -431,7 +431,11 @@ class Frame:
                 job.update(phase="cancelled", message="The next schedule event passed; wake cancelled.")
                 self.save()
                 return
-            if not self.wake_startup(job):
+            if not job.get("cache_trimmed"):
+                self.trim_device_caches()
+                job["cache_trimmed"] = True
+                self.save()
+            if not self.wake_startup(job, foreground=True):
                 return
             self.finish_job(job, "Wake completed; brightness restored and ImmichFrame running")
         except Exception as exc:

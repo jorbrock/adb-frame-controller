@@ -106,7 +106,8 @@ plug fallback if ADB is unavailable or shutdown fails. An accepted shutdown gets
 The worker checks every five seconds, so each wait may take a few seconds longer.
 Both reboot modes wait for Android boot and the configured boot delay, then restore
 the scheduled display mode or active manual override. Scheduled wakes use the
-plug-based wake sequence below.
+plug-based wake sequence below. Scheduled and manual wakes trim device caches
+after ADB connects and before launching ImmichFrame.
 
 All-frame Wake/Sleep includes powered-off frames and skips disabled frames.
 Sleep allows the next scheduled wake to restore power.

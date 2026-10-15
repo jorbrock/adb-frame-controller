@@ -72,7 +72,7 @@ class GlobalActionTests(unittest.TestCase):
                     frame.state = {"power": "off"}
                     frame.adb = Mock()
                     frame.adb.connect.side_effect = RuntimeError("powered off") if action == "sleep" else None
-                    frame.adb.shell.side_effect = lambda *args: "" if args[:2] == ("sh", "-c") else "Status: ok"
+                    frame.adb.shell.side_effect = lambda *args, **kwargs: "" if args[:2] == ("sh", "-c") else "Status: ok"
                 response = self.post(action)
                 self.assertIn(b'requested for 2 frame(s)', response.data)
                 for frame in self.registry.frames.values():

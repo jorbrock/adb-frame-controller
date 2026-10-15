@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Trim device caches after connecting over ADB on scheduled and manual wakes,
+  before launching ImmichFrame.
+
 - Remove dedicated Power on/off controls and their persistent scheduling pause.
   Existing power-action journals are retired on startup so scheduling can resume.
 

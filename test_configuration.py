@@ -495,7 +495,7 @@ class ConfigurationWebTests(unittest.TestCase):
         frame = self.registry.frames["living-room"]
         frame.cfg.update(wyze_mac="AABBCCDDEEFF", boot_delay_seconds=0)
         frame.adb = Mock()
-        frame.adb.shell.side_effect = lambda *args: "" if args[:2] == ("sh", "-c") else "Status: ok"
+        frame.adb.shell.side_effect = lambda *args, **kwargs: "" if args[:2] == ("sh", "-c") else "Status: ok"
         for action, token, mode in (("wake", "a" * 32, "day"), ("sleep", "b" * 32, "night")):
             frame.adb.reset_mock()
             response = self.client.post(f"/frames/living-room/{action}",
