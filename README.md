@@ -413,8 +413,12 @@ to permanently remove that frame's history while preserving its latest status an
 settings; new events continue to be recorded. Logs require sign-in.
 History is persisted in `/data/<frame-name>.log.jsonl` and follows UI frame renames.
 Recording starts with this feature and preserves the previously saved latest result;
-earlier results cannot be recovered. Log files are retained without automatic rotation,
-so their disk usage grows over time. This is controller result history, not Android logcat.
+earlier results cannot be recovered. This is controller result history, not Android logcat.
+
+Frame log entries older than three days (72 hours) are automatically purged at
+startup and hourly, including logs for disabled and removed frames. Cleanup
+preserves current status and coordinates with log writes. Legacy entries without
+a valid timezone-aware timestamp are retained because their age is unknown.
 
 Docker health only confirms
 the scheduler is running; it does not mean every frame is reachable or advancing

@@ -1,9 +1,10 @@
 """Persistent frame history and its authenticated UI."""
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 import controller as c
@@ -162,6 +163,99 @@ class FrameLogTests(unittest.TestCase):
         self.frame.status('after_interruption')
         self.assertEqual([r['result'] for r in frame_log.entries(self.frame.log_path)],
                          ['after_interruption', 'second', 'first'])
+
+
+class LogRetentionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name)
+        self.now = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+        self.cutoff = self.now - timedelta(days=3)
+        self.path = self.data / "frame.log.jsonl"
+
+    def entry(self, result, when):
+        return dict(result=result, updated_at=when.isoformat())
+
+    def test_retention_boundary_offsets_order_and_unknown_timestamps(self):
+        old = self.entry("old", self.cutoff - timedelta(microseconds=1))
+        boundary = self.entry("boundary", self.cutoff.astimezone(timezone(timedelta(hours=-7))))
+        recent = self.entry("recent", self.now)
+        for entry in (recent, old, boundary, dict(result="legacy")):
+            frame_log.append(self.path, entry)
+        frame_log.purge_all(self.data, self.now)
+        self.assertEqual([entry["result"] for entry in frame_log.entries(self.path)],
+                         ["legacy", "boundary", "recent"])
+
+    def test_all_logs_including_disabled_removed_and_no_legacy_reseeding(self):
+        old = self.entry("old", self.cutoff - timedelta(days=1))
+        for name in ("active", "disabled", "removed"):
+            path = self.data / f"{name}.log.jsonl"
+            frame_log.append(path, old)
+            (self.data / f"{name}.status.json").write_text(json.dumps(old))
+        frame_log.purge_all(self.data, self.now)
+        for name in ("active", "disabled", "removed"):
+            path = self.data / f"{name}.log.jsonl"
+            self.assertEqual(list(frame_log.entries(path)), [])
+            self.assertEqual(json.loads((self.data / f"{name}.status.json").read_text()), old)
+            frame_log.append(path, self.entry("new", self.now), old)
+            self.assertEqual([e["result"] for e in frame_log.entries(path)], ["new"])
+
+    def test_failed_rewrite_preserves_original_and_continues_other_frames(self):
+        old = self.entry("old", self.cutoff - timedelta(seconds=1))
+        other = self.data / "other.log.jsonl"
+        for path in (self.path, other):
+            frame_log.append(path, old)
+        original = self.path.read_bytes()
+        replace = frame_log.os.replace
+        def fail_one(source, destination):
+            if destination == self.path:
+                raise OSError("disk failure")
+            replace(source, destination)
+        with patch.object(frame_log.os, "replace", side_effect=fail_one):
+            with self.assertLogs(frame_log.LOG, level="ERROR"):
+                frame_log.purge_all(self.data, self.now)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(list(frame_log.entries(other)), [])
+        self.assertFalse(self.path.with_suffix(".tmp").exists())
+
+    def test_append_during_purge_is_not_lost(self):
+        frame_log.append(self.path, self.entry("old", self.cutoff - timedelta(days=1)))
+        replacing, release, appended = threading.Event(), threading.Event(), threading.Event()
+        replace = frame_log.os.replace
+        def blocked_replace(source, destination):
+            replacing.set()
+            if not release.wait(3):
+                raise RuntimeError("test purge timed out")
+            replace(source, destination)
+        def append():
+            frame_log.append(self.path, self.entry("new", self.now))
+            appended.set()
+        with patch.object(frame_log.os, "replace", side_effect=blocked_replace):
+            cleaner = threading.Thread(target=frame_log.purge, args=(self.path, self.cutoff))
+            cleaner.start()
+            writer = threading.Thread(target=append)
+            try:
+                self.assertTrue(replacing.wait(2))
+                writer.start()
+                self.assertFalse(appended.wait(.05))
+            finally:
+                release.set()
+                cleaner.join(3)
+                if writer.ident is not None:
+                    writer.join(3)
+            self.assertFalse(cleaner.is_alive())
+            self.assertTrue(appended.is_set())
+        self.assertEqual([e["result"] for e in frame_log.entries(self.path)], ["new"])
+
+    def test_maintenance_runs_immediately_then_waits_an_hour_and_stops(self):
+        stop = Mock()
+        stop.is_set.return_value = False
+        stop.wait.return_value = True
+        with patch.object(frame_log, "purge_all") as purge:
+            frame_log.maintenance(self.data, stop)
+        purge.assert_called_once_with(self.data)
+        stop.wait.assert_called_once_with(3600)
 
 
 if __name__ == '__main__':

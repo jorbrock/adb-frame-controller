@@ -1158,6 +1158,10 @@ def main():
     # works with scheduling disabled.
     registry = FrameRegistry(config, DATA)
     registry.start()
+    log_worker = threading.Thread(target=frame_log.maintenance, args=(DATA, STOP),
+                                  name="log-retention", daemon=True)
+    log_worker.start()
+    workers.append(log_worker)
     if config["web"].get("enabled", False):
         from webui import create_app
         from waitress import create_server
