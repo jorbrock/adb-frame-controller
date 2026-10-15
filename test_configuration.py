@@ -435,24 +435,48 @@ class ConfigurationWebTests(unittest.TestCase):
         self.assertFalse(frame.adb.run_as_root)
         self.assertNotIn(b'checked', self.client.get("/frames/kitchen/edit").data)
 
-    def test_disable_and_reenable_from_settings(self):
-        response = self.client.post("/frames/living-room/edit", data=self.form(enabled="false"))
+    def test_disable_and_reenable_from_card(self):
+        response = self.client.post("/frames/living-room/management", data=self.form(enabled="false"))
         self.assertEqual(response.status_code, 303)
         frame = self.registry.frames["living-room"]
         self.assertFalse(frame.cfg["enabled"])
         page = self.client.get("/").data
         self.assertIn(b"Management disabled", page)
         self.assertIn(b"No commands or status checks are running", page)
-        self.assertIn(b'value="false" selected', self.client.get("/frames/living-room/edit").data)
+        self.assertIn(b'role="switch" aria-checked="false"', page)
+        self.assertFalse(json.loads((self.data / "frames.json").read_text())[0]["enabled"])
+        for path in ("/frames/new", "/frames/living-room/edit"):
+            self.assertNotIn(b'name="enabled"', self.client.get(path).data)
+        settings = self.form(day_brightness=200)
+        settings.pop("enabled")
+        self.assertEqual(self.client.post("/frames/living-room/edit", data=settings).status_code, 303)
+        self.assertFalse(frame.cfg["enabled"])
+        self.assertEqual(frame.cfg["day_brightness"], 200)
         for action in ("wake", "sleep", "reboot", "reset_app"):
             response = self.client.post(f"/frames/living-room/{action}",
                 data=dict(csrf="csrf-token", request_id="a" * 32), follow_redirects=True)
             self.assertIn(b"management is disabled", response.data)
-        self.assertEqual(self.client.post("/frames/living-room/edit",
+        self.assertEqual(self.client.post("/frames/living-room/management",
             data=self.form(enabled="true")).status_code, 303)
         self.assertTrue(frame.cfg["enabled"])
-        self.assertEqual(self.client.post("/frames/living-room/edit",
+        self.assertIn(b'role="switch" aria-checked="true"', self.client.get("/").data)
+        self.assertEqual(self.client.post("/frames/living-room/management",
             data=self.form(enabled="invalid")).status_code, 400)
+
+    def test_management_rejects_stale_unknown_and_failed_saves(self):
+        path = "/frames/living-room/management"
+        self.assertEqual(self.client.get(path).status_code, 405)
+        self.assertEqual(self.client.post("/frames/unknown/management", data=self.form()).status_code, 404)
+        stale = self.form(enabled="false")
+        self.client.post("/frames/living-room/edit", data=self.form(day_brightness=200))
+        response = self.client.post(path, data=stale, follow_redirects=True)
+        self.assertIn(b"another session", response.data)
+        self.assertTrue(self.registry.frames["living-room"].cfg["enabled"])
+        with patch("controller.atomic_json", side_effect=OSError("disk full")):
+            with self.assertLogs(self.app.logger, level="ERROR"):
+                response = self.client.post(path, data=self.form(enabled="false"), follow_redirects=True)
+        self.assertIn(b"Could not save settings", response.data)
+        self.assertTrue(self.registry.frames["living-room"].cfg["enabled"])
 
     def test_forms_and_empty_state(self):
         for path in ("/", "/frames/new", "/frames/living-room/edit", "/frames/living-room/remove"):
@@ -484,7 +508,8 @@ class ConfigurationWebTests(unittest.TestCase):
         self.assertEqual([cfg["name"] for cfg in json.loads((self.data / "frames.json").read_text())], ["living-room"])
 
     def test_authentication_and_csrf_for_every_mutation(self):
-        paths = ("/frames/new", "/frames/living-room/edit", "/frames/living-room/remove")
+        paths = ("/frames/new", "/frames/living-room/edit", "/frames/living-room/remove",
+                 "/frames/living-room/management")
         for path in paths:
             for csrf in (None, "wrong", "é"):
                 data = self.form()

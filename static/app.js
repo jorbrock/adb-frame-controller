@@ -72,7 +72,7 @@ document.querySelector('#confirm-reboot')?.addEventListener('click', () => {
   document.querySelector('#confirm-reboot').disabled = true;
   pendingForm.submit();
 });
-document.querySelectorAll('.display-form').forEach(form => {
+document.querySelectorAll('.display-form, .management-form').forEach(form => {
   form.addEventListener('submit', () => { submitting = true; });
 });
 document.querySelectorAll('time[datetime]').forEach(element => {

@@ -98,7 +98,8 @@ def create_app(config, registry, data):
 
     @app.get("/")
     def index():
-        return render_template("index.html", frames=registry.snapshots(),
+        _, revision = registry.configuration()
+        return render_template("index.html", frames=registry.snapshots(), revision=revision,
                                timezone=config["timezone"], scheduled=config.get("enabled", False))
 
     @app.get("/frames/<name>/log")
@@ -223,6 +224,20 @@ def create_app(config, registry, data):
             return "Could not save settings. Check that the data directory is writable and has free space.", 503
         return None, 303
 
+    @app.post("/frames/<name>/management")
+    def frame_management(name):
+        values, _ = configuration(name)
+        enabled = request.form.get("enabled")
+        if enabled not in ("true", "false"):
+            abort(400, "Frame enabled must be true or false.")
+        values["enabled"] = enabled == "true"
+        error, _ = save_configuration(name, values, request.form.get("revision", ""))
+        if error:
+            flash(error, "error")
+        else:
+            flash(f"Management {'enabled' if values['enabled'] else 'disabled'} for {name}.", "success")
+        return redirect(url_for("index"), code=303)
+
     @app.route("/frames/new", methods=["GET", "POST"])
     @app.route("/frames/<name>/edit", methods=["GET", "POST"])
     def edit_frame(name=None):
@@ -241,10 +256,6 @@ def create_app(config, registry, data):
             values["shutdown_command"] = request.form.get(
                 "shutdown_command", values.get("shutdown_command", "svc power shutdown")).strip()
             values["wyze_mac"] = request.form.get("wyze_mac", values.get("wyze_mac", "")).strip()
-            enabled = request.form.get("enabled", "true")
-            values["enabled"] = enabled == "true"
-            if enabled not in ("true", "false"):
-                error, code = "Frame enabled must be true or false.", 400
             values["run_as_root"] = request.form.get("run_as_root") == "true"
             parsed = dict(values)
             for field in ("day_brightness", "boot_delay_seconds"):

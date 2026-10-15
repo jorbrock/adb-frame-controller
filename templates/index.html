@@ -21,7 +21,16 @@
 <div class="frame-grid" data-refresh="true">
 {% for frame in frames %}
   <article class="frame-card">
-    <div class="card-top"><span class="frame-icon" aria-hidden="true">▣</span>
+    <div class="card-top">
+      <form class="management-form" method="post" action="{{ url_for('frame_management', name=frame.name) }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="revision" value="{{ revision }}">
+        <input type="hidden" name="enabled" value="{{ 'false' if frame.get('enabled', true) else 'true' }}">
+        <button class="management-toggle" type="submit" role="switch" aria-checked="{{ 'true' if frame.get('enabled', true) else 'false' }}" aria-label="Frame management for {{ frame.name }}" title="{{ 'Disable' if frame.get('enabled', true) else 'Enable' }} frame management">
+          <span class="management-track" aria-hidden="true"><span class="management-thumb"></span></span>
+          <span class="management-label" aria-hidden="true">Management <strong>{{ 'on' if frame.get('enabled', true) else 'off' }}</strong></span>
+        </button>
+      </form>
       <span class="badge {{ 'busy' if frame.busy else '' }}">
         {% if not frame.get('enabled', true) %}Management disabled
         {% elif frame.busy %}{{ frame.job.get('action', 'reboot')|replace('_', ' ')|capitalize }} in progress
