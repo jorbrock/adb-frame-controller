@@ -127,6 +127,45 @@ class WebTests(unittest.TestCase):
                     data=dict(csrf=self.token(), request_id="b" * 32), follow_redirects=True)
             self.assertIn(b"Could not save the request", response.data)
 
+    def test_brightness_requires_auth_csrf_valid_value_and_known_frame(self):
+        path = "/frames/living-room/brightness"
+        self.assertEqual(self.client.post(path).status_code, 302)
+        self.frame.request_action.assert_not_called()
+        self.login()
+        data = dict(csrf=self.token(), request_id="a" * 32, brightness="200")
+        self.assertEqual(self.client.get(path).status_code, 405)
+        self.assertEqual(self.client.post(path, data={**data, "csrf": "wrong"}).status_code, 400)
+        self.assertEqual(self.client.post(path, data={**data, "request_id": "invalid"}).status_code, 400)
+        for value in ("", "0", "256", "1.5", "true", "128;reboot"):
+            self.assertEqual(self.client.post(path, data={**data, "brightness": value}).status_code, 400)
+        self.assertEqual(self.client.post("/frames/unknown/brightness", data=data).status_code, 404)
+        self.frame.request_action.assert_not_called()
+        response = self.client.post(path, data=data, follow_redirects=True)
+        self.frame.request_action.assert_called_once_with("brightness", "a" * 32, brightness=200)
+        self.assertIn(b"Startup brightness is unchanged", response.data)
+        self.assertIn(b'type="range"', response.data)
+        self.assertIn(b'Release to apply', response.data)
+
+    def test_brightness_shows_errors_and_disables_unavailable_frames(self):
+        self.login()
+        data = dict(csrf=self.token(), request_id="a" * 32, brightness="200")
+        self.frame.request_action.side_effect = RuntimeError("Frame is busy")
+        response = self.client.post("/frames/living-room/brightness", data=data, follow_redirects=True)
+        self.assertIn(b"Frame is busy", response.data)
+        self.frame.request_action.side_effect = OSError("disk full")
+        with self.assertLogs(self.app.logger, level="ERROR"):
+            response = self.client.post("/frames/living-room/brightness", data=data, follow_redirects=True)
+        self.assertIn(b"Could not save the request", response.data)
+        for flag in ("busy", "power_suspended", "enabled"):
+            snapshot = self.frame.snapshot.return_value
+            snapshot[flag] = flag != "enabled"
+            page = self.client.get("/").data.decode()
+            slider = next(line for line in page.splitlines() if 'name="brightness"' in line)
+            self.assertIn("disabled", slider)
+            snapshot.pop(flag)
+        self.frame.snapshot.return_value.update(current_brightness=220, day_brightness=128)
+        self.assertIn(b'value="220"', self.client.get("/").data)
+
     def test_logout(self):
         self.login()
         self.assertEqual(self.client.post("/logout", data=dict(csrf=self.token())).status_code, 303)

@@ -61,6 +61,15 @@
     {% if frame.job %}
     <div class="job {{ 'job-error' if frame.job.phase == 'failed' else '' }}"><strong>{{ 'Scheduled ' if frame.job.get('source') == 'scheduled' else 'Automatic recovery · ' if frame.job.get('source') == 'monitoring' else 'Manual ' }}{{ frame.job.get('action', 'reboot')|replace('_', ' ') }} · {{ frame.job.phase|replace('_', ' ')|capitalize }}</strong><p>{{ frame.job.message }}</p></div>
     {% endif %}
+    <form class="brightness-form" method="post" action="{{ url_for('brightness', name=frame.name) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="request_id" value="{{ request_token() }}">
+      {% set brightness = frame.get('current_brightness') or frame.get('day_brightness', 128) %}
+      <label for="brightness-{{ loop.index }}">Brightness <output for="brightness-{{ loop.index }}">{{ brightness }}</output></label>
+      <input id="brightness-{{ loop.index }}" name="brightness" type="range" min="1" max="255" step="1" value="{{ brightness }}" aria-describedby="brightness-help-{{ loop.index }}" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>
+      <small id="brightness-help-{{ loop.index }}">Release to apply. Temporary; the next wake or app launch restores startup brightness. {% if not frame.get('current_brightness') %}Showing startup level until brightness is set.{% else %}Showing last applied level.{% endif %}</small>
+      <noscript><button class="quiet" type="submit" {% if frame.busy or frame.power_suspended or not frame.get('enabled', true) %}disabled{% endif %}>Apply brightness</button></noscript>
+    </form>
     <div class="display-actions">
       {% for action, label in [('wake', 'Wake frame'), ('sleep', 'Sleep frame')] %}
       <form class="display-form" method="post" action="{{ url_for('display_action', name=frame.name, action=action) }}">

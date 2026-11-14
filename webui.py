@@ -188,6 +188,27 @@ def create_app(config, registry, data):
             flash(f"{action.replace('_', ' ').capitalize()} requested for {name}. Progress will appear below.", "success")
         return redirect(url_for("index"), code=303)
 
+    @app.post("/frames/<name>/brightness")
+    def brightness(name):
+        token = request.form.get("request_id", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            abort(400, "Invalid request ID")
+        value = request.form.get("brightness", "")
+        if not re.fullmatch(r"[0-9]{1,3}", value) or not 1 <= int(value) <= 255:
+            abort(400, "Brightness must be an integer from 1 to 255")
+        try:
+            registry.request_brightness(name, int(value), token)
+        except KeyError:
+            abort(404)
+        except RuntimeError as exc:
+            flash(str(exc), "error")
+        except OSError:
+            app.logger.exception("Cannot save brightness request")
+            flash("Could not save the request. Check the data directory and try again.", "error")
+        else:
+            flash(f"Brightness {value} requested for {name}. Startup brightness is unchanged.", "success")
+        return redirect(url_for("index"), code=303)
+
     @app.post("/frames/actions/wake", defaults={"action": "wake"})
     @app.post("/frames/actions/sleep", defaults={"action": "sleep"})
     def display_all(action):

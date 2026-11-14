@@ -88,3 +88,15 @@ if (document.querySelector('[data-refresh]')) {
     }
   }, 10000);
 }
+
+// Apply once the selected slider value is committed, rather than while dragging.
+document.querySelectorAll('.brightness-form').forEach(form => {
+  const slider = form.querySelector('input[type="range"]');
+  const output = form.querySelector('output');
+  slider.addEventListener('input', () => { output.value = slider.value; });
+  slider.addEventListener('change', () => {
+    if (submitting) return;
+    submitting = true;
+    form.requestSubmit();
+  });
+});

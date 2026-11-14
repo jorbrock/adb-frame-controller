@@ -257,6 +257,7 @@ class Frame:
         self.scheduled = scheduled
         self.mutex = threading.Lock()
         self.wakeup = threading.Event()
+        self.current_brightness = None
 
     def check_active(self):
         if self.stopped.is_set():
@@ -680,9 +681,13 @@ class Frame:
         self.adb.shell("pm", "trim-caches", "999G", timeout=120)
 
     def restore_brightness(self):
+        self.set_brightness(self.cfg.get("day_brightness", 128))
+
+    def set_brightness(self, brightness):
         self.adb.shell("settings", "put", "system", "screen_brightness_mode", "0")
         self.adb.shell("settings", "put", "system", "screen_brightness",
-                       str(self.cfg.get("day_brightness", 128)))
+                       str(brightness))
+        self.current_brightness = brightness
 
     def start_app(self):
         output = self.adb.shell("am", "start", "-W", "-n", self.cfg["component"])
@@ -700,8 +705,10 @@ class Frame:
             raise ValueError("Reboot mode must be soft or hard")
         self.request_action("hard_reboot" if mode == "hard" else "reboot", request_id)
 
-    def request_action(self, action, request_id):
-        if action not in ("wake", "sleep", "reboot", "reset_app") + POWER_ACTIONS:
+    def request_action(self, action, request_id, brightness=None):
+        if action == "brightness" and (type(brightness) is not int or not 1 <= brightness <= 255):
+            raise ValueError("Brightness must be an integer from 1 to 255")
+        if action not in ("wake", "sleep", "reboot", "reset_app", "brightness") + POWER_ACTIONS:
             raise ValueError("Invalid manual action")
         # Never wait for ADB in a web request or let two actions overlap.
         if not self.mutex.acquire(blocking=False):
@@ -711,7 +718,8 @@ class Frame:
                 raise RuntimeError("Frame management is disabled. Enable it on the frame card first.")
             old = self.state.get("manual", {})
             if old.get("id") == request_id:
-                if old.get("action", "reboot") != action:
+                if old.get("action", "reboot") != action or (
+                        action == "brightness" and old.get("brightness") != brightness):
                     raise RuntimeError("Request ID already used for a different action.")
                 return  # Same browser request never renews an override.
             if old.get("phase") in ACTIVE_PHASES:
@@ -732,12 +740,14 @@ class Frame:
             self.state["last_reboot_requested_at"] = last_reboot
             if action in ("reboot", "hard_reboot"):
                 self.state["last_reboot_requested_at"] = now
-            else:
+            elif action != "brightness":
                 self.state["override"] = dict(
                     mode="day" if action in ("wake", "reset_app") else "night",
                     expires_at=next_boundary(datetime.now(self.zone),
                                              self.cfg["sleep" if action in ("wake", "reset_app") else "wake"]),
                 )
+            if action == "brightness":
+                self.state["manual"]["brightness"] = brightness
             try:
                 self.save()  # Persist intent before any device receives commands.
             except OSError:
@@ -756,6 +766,8 @@ class Frame:
             return False
         if job.get("source") == "monitoring":
             return self.recovery_tick(job)
+        if job.get("action") == "brightness":
+            return self.brightness_tick(job)
         action = job.get("action", "reboot")  # Jobs written before v1.2.0 are reboots.
         if (action in ("wake", "sleep", "reset_app") and self.job_expired(job)
                 and job["phase"] not in SHUTDOWN_PHASES):
@@ -846,6 +858,24 @@ class Frame:
             LOG.warning("%s manual %s: %s", self.cfg["name"], action, exc)
         return True
 
+    def brightness_tick(self, job):
+        # A one-shot change: never wake, launch, renew overrides, or retry later.
+        try:
+            if self.power_suspended():
+                raise RuntimeError("Frame power is off or unknown. Use Wake first.")
+            self.adb.connect()
+            self.set_brightness(job["brightness"])
+        except OperationCancelled:
+            raise
+        except Exception as exc:
+            job.update(phase="failed", message=str(exc)[:600])
+        else:
+            job.update(phase="completed", message=f"Brightness set to {job['brightness']}; startup setting unchanged")
+        job["completed_at"] = time.time()
+        self.save()
+        self.job_status(job, job["phase"], **({"error": job["message"]} if job["phase"] == "failed" else {}))
+        return True
+
     def power_tick(self, job):
         """Advance a durable power operation, gracefully shutting down for a cycle."""
         action = job["action"]
@@ -899,6 +929,7 @@ class Frame:
         mode = "day" if self.schedule_event(now)[0] == "wake" else "night"
         return {**self.cfg, "mode": override.get("mode", mode),
                 "status": status, "job": job, "override": display_override,
+                "current_brightness": self.current_brightness,
                 "busy": job.get("phase") in ACTIVE_PHASES,
                 "power": state.get("power", "untracked"),
                 "power_suspended": self.power_suspended(state)}
@@ -978,6 +1009,10 @@ class FrameRegistry:
     def request_action(self, name, action, token):
         with self.lock:
             self.frames[name].request_action(action, token)
+
+    def request_brightness(self, name, brightness, token):
+        with self.lock:
+            self.frames[name].request_action("brightness", token, brightness=brightness)
 
     def request_all(self, action, token):
         if action not in ("wake", "sleep"):

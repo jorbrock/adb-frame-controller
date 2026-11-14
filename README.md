@@ -24,6 +24,11 @@ tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior mu
   Removal requires a confirmation page. Empty configurations are supported.
 - Settings are validated before saving. Busy frames and active manual actions
   reject edits/removal; stale forms cannot overwrite newer changes.
+- The **Brightness** slider on each main screen frame card applies a temporary
+  ADB brightness change when released (1–255). It leaves startup/day brightness
+  unchanged; the next wake or app launch restores that configured level. The
+  slider shows the last level applied by this controller, or the startup level
+  before one is known. It does not wake or restart the frame.
 - **Reset app**, beside **Reboot frame**, stops ImmichFrame, trims eligible caches
   across the device, and relaunches ImmichFrame with day brightness. Settings are
   retained; cached photos may need to download again. Like Wake frame, it holds

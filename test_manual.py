@@ -33,6 +33,70 @@ class ManualTests(unittest.TestCase):
         frame.adb.shell.side_effect = lambda *args, **kwargs: "Status: ok" if args[:2] == ("am", "start") else "1"
         return frame
 
+    def test_temporary_brightness_changes_only_adb_level_and_restores_on_launch(self):
+        frame = self.frame(scheduled=False)
+        frame.cfg["day_brightness"] = 128
+        frame.state.update(override={"mode": "day", "expires_at": 9999999999},
+                           schedule_event=["wake", 9999999999])
+        frame.save()
+        original = {key: value.copy() if isinstance(value, dict) else value[:]
+                    for key, value in frame.state.items()}
+        frame.request_action("brightness", "a" * 32, brightness=220)
+        frame.adb.connect.assert_not_called()
+        frame.tick()
+        frame.adb.connect.assert_called_once()
+        self.assertEqual(frame.adb.shell.call_args_list, [
+            call("settings", "put", "system", "screen_brightness_mode", "0"),
+            call("settings", "put", "system", "screen_brightness", "220")])
+        self.assertEqual(frame.cfg["day_brightness"], 128)
+        self.assertEqual(frame.state["override"], original["override"])
+        self.assertEqual(frame.state["schedule_event"], original["schedule_event"])
+        self.assertNotIn("next_health_check_at", frame.state)
+        self.assertEqual(frame.snapshot()["current_brightness"], 220)
+        frame.request_action("brightness", "a" * 32, brightness=220)
+        frame.tick()
+        frame.adb.connect.assert_called_once()
+        frame.launch()
+        self.assertEqual(frame.snapshot()["current_brightness"], 128)
+        frame.adb.shell.assert_any_call("settings", "put", "system", "screen_brightness", "128")
+        self.power.set_power.assert_not_called()
+
+    def test_brightness_validation_busy_disabled_and_power_guards(self):
+        frame = self.frame()
+        for value in (0, 256, True, "128", 1.5, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                frame.request_action("brightness", "a" * 32, brightness=value)
+        for key, value in (("power", "off"), ("power", "unknown")):
+            frame.state[key] = value
+            with self.assertRaisesRegex(RuntimeError, "power is off or unknown"):
+                frame.request_action("brightness", "a" * 32, brightness=1)
+        frame.state.clear()
+        frame.cfg["enabled"] = False
+        with self.assertRaisesRegex(RuntimeError, "management is disabled"):
+            frame.request_action("brightness", "a" * 32, brightness=1)
+        frame.cfg["enabled"] = True
+        with frame.mutex, self.assertRaisesRegex(RuntimeError, "busy"):
+            frame.request_action("brightness", "a" * 32, brightness=1)
+        frame.request_action("wake", "b" * 32)
+        with self.assertRaisesRegex(RuntimeError, "already in progress"):
+            frame.request_action("brightness", "a" * 32, brightness=255)
+        frame.adb.connect.assert_not_called()
+
+    def test_brightness_failure_is_visible_and_is_not_retried(self):
+        for failure in ("connect", "shell"):
+            with self.subTest(failure=failure):
+                frame = self.frame(scheduled=False)
+                frame.state = {}
+                frame.request_action("brightness", "a" * 32, brightness=255)
+                getattr(frame.adb, failure).side_effect = RuntimeError("device offline")
+                frame.tick()
+                self.assertEqual(frame.state["manual"]["phase"], "failed")
+                self.assertIn("device offline", frame.snapshot()["status"]["error"])
+                self.assertIsNone(frame.snapshot()["current_brightness"])
+                frame.tick()
+                frame.adb.connect.assert_called_once()
+                self.assertNotIn("override", frame.state)
+
     def test_reboot_exits_animation_after_boot_before_delay(self):
         self.cfg["boot_delay_seconds"] = 60
         frame = self.frame()
