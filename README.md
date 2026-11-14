@@ -1,12 +1,12 @@
-# ADB Frame Controller v2.3.0
+# ADB Frame Controller v2.4.0
 
 A small Python + ADB container with a local web interface that shuts down Android
 and cuts power through Wyze plugs each night, then powers on and restores ImmichFrame each morning. It operates
 independently of Immich, ImmichFrame's server, and Immich Kiosk; no Immich API key
 or changes to those containers are required.
 
-This is generated source code, not a published container image. The local logic
-tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior must be tested on your devices.
+GitHub releases build a downloadable container image through GitHub Actions.
+The local logic tests use mocked ADB and Wyze calls; actual Frameo firmware and plug behavior must be tested on your devices.
 
 ### Web behavior and local login
 
@@ -188,7 +188,7 @@ files while it is running.
 
 ### Environment settings
 
-Set global options in the service's `environment:` section in `compose.yaml`:
+Set global options in the service's `environment:` section in `docker-compose.yaml`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -286,7 +286,7 @@ connection, the chosen brightness, and advancing photos. Increase the boot delay
 if the frame needs longer before ADB is ready. Observe a full scheduled night and
 morning cycle before enabling the remaining frames.
 
-## 2. Prepare TrueNAS storage and build
+## 2. Prepare TrueNAS storage and load the image
 
 Use a Docker-based TrueNAS release. Replace `tank` with your pool name throughout.
 Create a dataset/directory for the project, extract this archive into it, and open
@@ -297,42 +297,79 @@ These commands require appropriate host permissions:
 mkdir -p /mnt/tank/apps/frame-controller/data
 chown 3019:3019 /mnt/tank/apps/frame-controller/data
 chmod 700 /mnt/tank/apps/frame-controller/data
-docker build -t frame-controller:2.3.0 .
 ```
 
-The image build requires internet access for the Python base image, Debian ADB
-packages, and the Flask/Waitress Python dependencies. If your dataset uses ACLs,
+After a release build succeeds, open the repository's **Actions** tab, select its
+**Build release image** run, and download the `frame-controller-linux-amd64`
+artifact. Unzip it and copy `frame-controller.tar` to the TrueNAS host, then load it:
+
+```bash
+docker load --input frame-controller.tar
+```
+
+Set the Compose `image:` to the loaded version, for example
+`frame-controller:2.4.0` for release `v2.4.0`. The archive targets `linux/amd64`
+(x86-64). It does not require a container registry or a local Docker build.
+
+For a local development build instead, run:
+
+```bash
+docker build -t frame-controller:2.4.0 .
+```
+
+Local builds require internet access for the Python base image, Debian ADB
+packages, and Python dependencies. If your dataset uses ACLs,
 grant UID/GID 3019 read/write access to data using the TrueNAS ACL editor.
 Preserve the data directory:
 it contains ADB private keys under `.android`, saved frame settings, login credentials,
 and reboot history. Restrict its access.
 
-Set `TZ` under `environment:` in `compose.yaml` to your timezone; the sample is
+Set `TZ` under `environment:` in `docker-compose.yaml` to your timezone; the sample is
 `America/Los_Angeles`. Leave `SCHEDULE_ENABLED: "false"` initially. After setting
 up the web login, use **Add frame** to configure your frame IPs and schedules.
-Names and addresses must be unique. Edit the data bind-mount path in `compose.yaml`
+Names and addresses must be unique. Edit the data bind-mount path in `docker-compose.yaml`
 to match your actual dataset.
 Also replace the example TrueNAS IP in the web port mapping with your LAN IP.
 
 ## 3. Install as a TrueNAS app
 
 Go to **Apps → Discover Apps → menu → Install via YAML**, name the app
-`frame-controller`, and paste `compose.yaml` into the editor. The image must already
-have been built on this TrueNAS host. `pull_policy: never` selects that local image.
+`frame-controller`, and paste `docker-compose.yaml` into the editor. The image must already
+have been loaded or built on this TrueNAS host. `pull_policy: never` selects that local image.
 This makes the service visible in TrueNAS Apps for logs, stop/start, and status.
 Do not also start the same service with `docker compose up` if TrueNAS manages it.
 
 The local image is not automatically updated or backed up with the data dataset.
-Keep this source and rebuild after migrating hosts or losing/pruning the image.
-For updates, build a new image tag and change the app YAML to use that tag.
+Keep a copy of the image archive so you can reload it after migrating hosts or
+losing/pruning the image. For updates, load the new release image and change the
+app YAML to use its version tag, then recreate the app.
 
-Alternatively, on a regular Docker Compose host, after adjusting paths and building:
+Alternatively, on a regular Docker Compose host, after adjusting paths and loading the image:
 
 ```bash
 docker compose up -d
 docker compose logs -f frame-controller
 docker compose exec frame-controller python /app/controller.py status
 ```
+
+### Release image workflow
+
+`.github/workflows/release-image.yml` builds the image when a GitHub release is
+**published**, including releases previously saved as drafts. Saving a draft or
+pushing a tag alone does not start a build. Include the workflow in the commit
+referenced by the release tag.
+
+Publish a release with a version tag such as `v2.4.0`. The workflow checks out that
+release tag, runs the existing Python test suite, and builds the production
+Dockerfile, including its runtime-user import check. The image is tagged with the
+release tag (`frame-controller:v2.4.0`) and, for semantic versions, the version
+without the leading `v` (`frame-controller:2.4.0`). Prereleases also build their
+own tagged image.
+
+Download the image from the successful workflow run's artifacts within 30 days;
+keep a local copy for long-term use. GitHub Actions must be enabled for the
+repository. The workflow uses read-only repository permissions and needs no
+additional secrets. Registry publishing is not configured.
 
 ## 4. Authorize the container's ADB key
 
@@ -382,7 +419,7 @@ If an older image reports `python: can't open file '/app/controller.py':
 [Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
 
 ```bash
-docker build --no-cache -t frame-controller:2.3.0 .
+docker build --no-cache -t frame-controller:2.4.0 .
 ```
 
 Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
@@ -391,7 +428,7 @@ does not replace its image. You can check the rebuilt image without starting any
 frame workers or mounting the data volume:
 
 ```bash
-docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.3.0 -c "import controller, webui; print('Application readable')"
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.4.0 -c "import controller, webui; print('Application readable')"
 ```
 
 The host data dataset separately needs read/write access for UID/GID `3019:3019`,

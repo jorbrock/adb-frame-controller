@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.4.0
+
+- Add a Brightness slider to each frame card for temporary ADB brightness changes
+  from 1–255. Apply the value when the slider is released and show the last applied
+  level, or the configured startup level before one is known. The next wake or app
+  launch restores startup brightness without changing the saved setting.
+- Validate brightness requests, require sign-in and CSRF protection, and reject
+  changes while the frame is busy, disabled, or power-suspended. Brightness changes
+  do not wake or restart the frame.
+- Build the production Docker image automatically when a GitHub release is
+  published, including releases previously saved as drafts. Check out the release
+  tag and run the Python test suite before building.
+- Provide a downloadable `linux/amd64` image archive in GitHub Actions artifacts,
+  retained for 30 days, with release and semantic version tags. Document importing
+  it with `docker load` instead of building manually on the deployment host.
+
+### Upgrade
+
+Publish release `v2.4.0`, download the image artifact from its successful
+**Build release image** workflow run, unzip it, and load `frame-controller.tar`
+on the deployment host with `docker load --input frame-controller.tar`.
+Recreate the service using `frame-controller:2.4.0` and the updated Compose file.
+A local `docker build -t frame-controller:2.4.0 .` remains available.
+Preserve the data volume to retain frame settings, credentials, ADB keys,
+controller state, and log history. No settings migration is required.
+
 ## v2.3.0
 
 - Move frame management from settings to a large toggle on each frame card.
