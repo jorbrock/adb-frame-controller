@@ -1,4 +1,4 @@
-# ADB Frame Controller v2.4.0
+# ADB Frame Controller v2.4.1
 
 A small Python + ADB container with a local web interface that shuts down Android
 and cuts power through Wyze plugs each night, then powers on and restores ImmichFrame each morning. It operates
@@ -308,13 +308,13 @@ docker load --input frame-controller.tar
 ```
 
 Set the Compose `image:` to the loaded version, for example
-`frame-controller:2.4.0` for release `v2.4.0`. The archive targets `linux/amd64`
+`frame-controller:2.4.1` for release `v2.4.1`. The archive targets `linux/amd64`
 (x86-64). It does not require a container registry or a local Docker build.
 
 For a local development build instead, run:
 
 ```bash
-docker build -t frame-controller:2.4.0 .
+docker build -t frame-controller:2.4.1 .
 ```
 
 Local builds require internet access for the Python base image, Debian ADB
@@ -359,17 +359,38 @@ docker compose exec frame-controller python /app/controller.py status
 pushing a tag alone does not start a build. Include the workflow in the commit
 referenced by the release tag.
 
-Publish a release with a version tag such as `v2.4.0`. The workflow checks out that
+Publish a release with a version tag such as `v2.4.1`. The workflow checks out that
 release tag, runs the existing Python test suite, and builds the production
 Dockerfile, including its runtime-user import check. The image is tagged with the
-release tag (`frame-controller:v2.4.0`) and, for semantic versions, the version
-without the leading `v` (`frame-controller:2.4.0`). Prereleases also build their
+release tag (`frame-controller:v2.4.1`) and, for semantic versions, the version
+without the leading `v` (`frame-controller:2.4.1`). Prereleases also build their
 own tagged image.
 
 Download the image from the successful workflow run's artifacts within 30 days;
 keep a local copy for long-term use. GitHub Actions must be enabled for the
-repository. The workflow uses read-only repository permissions and needs no
-additional secrets. Registry publishing is not configured.
+repository.
+
+The same built image is also published as a GitHub package at
+`ghcr.io/jorbrock/adb-frame-controller:<release-name>`. The package tag uses the
+release's display name, falling back to its Git tag when the name is empty.
+Spaces and other unsupported characters become hyphens, leading periods/hyphens
+are removed, and tags are limited to 128 characters. For example, release name
+`v2.4.1` produces `ghcr.io/jorbrock/adb-frame-controller:v2.4.1`; `Version 2.4.1`
+produces the tag `Version-2.4.1`. Choose distinct release names to avoid overwriting
+a package tag. The package name/tag is printed in the workflow log.
+
+Publishing uses the built-in `GITHUB_TOKEN` with `contents: read` and
+`packages: write`; no additional secret is needed. Repository policy must permit
+package writes. After the first publish, set the package's visibility to Public
+for unauthenticated pulls, or log in to GHCR with credentials that can read it.
+
+To deploy the package instead of loading the archive, set the service's `image:`
+to the package reference and change `pull_policy: never` to `pull_policy: always`
+in your deployment YAML. For a release named `v2.4.1`:
+
+```bash
+docker pull ghcr.io/jorbrock/adb-frame-controller:v2.4.1
+```
 
 ## 4. Authorize the container's ADB key
 
@@ -419,7 +440,7 @@ If an older image reports `python: can't open file '/app/controller.py':
 [Errno 13] Permission denied`, rebuild it with the updated Dockerfile:
 
 ```bash
-docker build --no-cache -t frame-controller:2.4.0 .
+docker build --no-cache -t frame-controller:2.4.1 .
 ```
 
 Redeploy/recreate the TrueNAS app using that rebuilt image. On a regular Compose
@@ -428,7 +449,7 @@ does not replace its image. You can check the rebuilt image without starting any
 frame workers or mounting the data volume:
 
 ```bash
-docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.4.0 -c "import controller, webui; print('Application readable')"
+docker run --rm --user 3019:3019 --entrypoint python frame-controller:2.4.1 -c "import controller, webui; print('Application readable')"
 ```
 
 The host data dataset separately needs read/write access for UID/GID `3019:3019`,

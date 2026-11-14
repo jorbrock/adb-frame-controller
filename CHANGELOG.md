@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.4.1
+
+- Publish the built image to GitHub Container Registry as a GitHub package,
+  tagged with the release's display name (normalized to a valid Docker tag),
+  falling back to the Git tag when the release name is empty.
+- Authenticate publishing with the built-in `GITHUB_TOKEN` and package-write
+  permission; no additional registry secret is required.
+- Publish the same image supplied in the downloadable Actions archive and retain
+  the existing release/version tags in that archive.
+- Document package naming, registry access, and pulling the published image.
+
+### Upgrade
+
+Publish release `v2.4.1` with display name `v2.4.1` to produce
+`ghcr.io/jorbrock/adb-frame-controller:v2.4.1`. To deploy the package, use that
+image reference and `pull_policy: always` in your deployment YAML, then recreate
+the service. The package must be public or the deployment host must authenticate
+with credentials that can read it.
+
+Alternatively, download and load the release's image archive and use
+`frame-controller:2.4.1` with `pull_policy: never`, as in the supplied Compose file.
+Preserve the data volume. No settings migration is required.
+
 ## v2.4.0
 
 - Add a Brightness slider to each frame card for temporary ADB brightness changes
